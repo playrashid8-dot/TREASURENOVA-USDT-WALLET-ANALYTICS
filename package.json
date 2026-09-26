@@ -1,0 +1,49 @@
+{
+  "name": "treasurenova-usdt-wallet-analytics",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TreasureNOVA USDT Wallet Analytics — real-time BEP-20 USDT analytics on BNB Smart Chain",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "sync": "tsx scripts/sync-history.ts",
+    "verify:blockchain": "tsx scripts/verify-blockchain.ts",
+    "verify:token": "tsx scripts/verify-token.ts",
+    "db:migrate": "echo \"Apply supabase/migrations/*.sql in the Supabase SQL editor or via supabase db push\"",
+    "test": "vitest run --config vitest.config.mts",
+    "test:watch": "vitest --config vitest.config.mts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.4.0",
+    "dotenv": "^18.0.4",
+    "ethers": "^6.17.0",
+    "next": "^16.3.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "recharts": "^3.10.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.6",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.2"
+  }
+}

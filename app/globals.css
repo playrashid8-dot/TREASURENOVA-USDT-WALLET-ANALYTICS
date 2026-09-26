@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+:root {
+  --tn-navy: #0b1f3a;
+  --tn-navy-soft: #1a3358;
+  --tn-text: #0f172a;
+  --tn-muted: #64748b;
+  --tn-border: #e2e8f0;
+  --tn-surface: #ffffff;
+  --tn-bg: #f5f7fb;
+  --tn-bg-accent: #eef3f9;
+  --tn-deposit: #15803d;
+  --tn-deposit-bg: #ecfdf5;
+  --tn-withdraw: #c2410c;
+  --tn-withdraw-bg: #fff7ed;
+  --tn-info: #1d4ed8;
+  --tn-info-bg: #eff6ff;
+  --tn-live: #16a34a;
+  --tn-warning: #b45309;
+  --tn-error: #b91c1c;
+  --tn-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
+  --font-display: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+@theme inline {
+  --color-tn-navy: var(--tn-navy);
+  --color-tn-navy-soft: var(--tn-navy-soft);
+  --color-tn-text: var(--tn-text);
+  --color-tn-muted: var(--tn-muted);
+  --color-tn-border: var(--tn-border);
+  --color-tn-surface: var(--tn-surface);
+  --color-tn-bg: var(--tn-bg);
+  --color-tn-deposit: var(--tn-deposit);
+  --color-tn-withdraw: var(--tn-withdraw);
+  --color-tn-info: var(--tn-info);
+  --color-tn-live: var(--tn-live);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-body);
+  color: var(--tn-text);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #dbe7f5 0%, transparent 55%),
+    radial-gradient(900px 400px at 90% 0%, #e8f0e9 0%, transparent 50%),
+    linear-gradient(180deg, #f7f9fc 0%, #eef2f7 100%);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
+}
+
+.tn-card {
+  background: var(--tn-surface);
+  border: 1px solid var(--tn-border);
+  border-radius: 16px;
+  box-shadow: var(--tn-shadow);
+}
+
+.tn-skeleton {
+  background: linear-gradient(90deg, #eef2f7 25%, #f8fafc 50%, #eef2f7 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll table {
+  min-width: 720px;
+}
+
+@media (max-width: 640px) {
+  .table-scroll table {
+    min-width: 640px;
+  }
+}
