@@ -1,17 +1,21 @@
+import { DEPOSIT_WALLET, WITHDRAW_WALLET } from "@/lib/config";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
+import { normalizeAddress } from "@/lib/utils/addresses";
 
 /**
  * Rebuild daily_stats for a specific UTC date (or all dates if omitted).
  * Counts only indexed USDT Transfer INs (to == deposit/withdraw wallet).
- * Wallet OUT transfers are never indexed and never included here.
+ * Withdraw Wallet OUT rows may exist for Transaction History but are ignored here.
  * Idempotent — safe to call after upserts and for reconciliation repairs.
  */
 export async function reconcileDailyStats(date?: string): Promise<void> {
   const supabase = getSupabaseAdmin();
+  const depositAddr = normalizeAddress(DEPOSIT_WALLET);
+  const withdrawAddr = normalizeAddress(WITHDRAW_WALLET);
 
   let query = supabase
     .from("transactions")
-    .select("timestamp, wallet_type, amount_usdt, status");
+    .select("timestamp, wallet_type, amount_usdt, status, to_address");
 
   if (date) {
     const start = `${date}T00:00:00.000Z`;
@@ -48,10 +52,12 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
     };
 
     const amount = Number(row.amount_usdt) || 0;
-    if (row.wallet_type === "deposit") {
+    const to = normalizeAddress(String(row.to_address ?? ""));
+    // Daily analytics: IN only (to == wallet). OUT rows are excluded.
+    if (row.wallet_type === "deposit" && to === depositAddr) {
       bucket.deposit_amount += amount;
       bucket.deposit_count += 1;
-    } else if (row.wallet_type === "withdraw") {
+    } else if (row.wallet_type === "withdraw" && to === withdrawAddr) {
       bucket.withdrawal_amount += amount;
       bucket.withdrawal_count += 1;
     }
@@ -92,7 +98,7 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
 }
 
 /**
- * Compare SUM(transactions) vs SUM(daily_stats) and repair if mismatched.
+ * Compare SUM(transactions IN) vs SUM(daily_stats) and repair if mismatched.
  */
 export async function runReconciliationCheck(): Promise<{
   ok: boolean;
@@ -103,10 +109,12 @@ export async function runReconciliationCheck(): Promise<{
   statsWithdrawals: number;
 }> {
   const supabase = getSupabaseAdmin();
+  const depositAddr = normalizeAddress(DEPOSIT_WALLET);
+  const withdrawAddr = normalizeAddress(WITHDRAW_WALLET);
 
   const { data: txs, error: txErr } = await supabase
     .from("transactions")
-    .select("wallet_type, amount_usdt, status");
+    .select("wallet_type, amount_usdt, status, to_address");
 
   if (txErr) {
     console.error("[reconciliation] TX query failed:", txErr.message);
@@ -118,8 +126,11 @@ export async function runReconciliationCheck(): Promise<{
   for (const row of txs ?? []) {
     if (row.status !== "success") continue;
     const amt = Number(row.amount_usdt) || 0;
-    if (row.wallet_type === "deposit") txDeposits += amt;
-    if (row.wallet_type === "withdraw") txWithdrawals += amt;
+    const to = normalizeAddress(String(row.to_address ?? ""));
+    if (row.wallet_type === "deposit" && to === depositAddr) txDeposits += amt;
+    if (row.wallet_type === "withdraw" && to === withdrawAddr) {
+      txWithdrawals += amt;
+    }
   }
 
   const { data: stats, error: stErr } = await supabase

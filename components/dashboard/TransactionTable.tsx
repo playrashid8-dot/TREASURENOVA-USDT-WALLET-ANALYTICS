@@ -17,9 +17,9 @@ interface TransactionTableProps {
   totalPages: number;
   total: number;
   search: string;
-  type: "all" | "deposit" | "withdraw";
+  type: "deposit" | "withdraw";
   onSearchChange: (value: string) => void;
-  onTypeChange: (value: "all" | "deposit" | "withdraw") => void;
+  onTypeChange: (value: "deposit" | "withdraw") => void;
   onPageChange: (page: number) => void;
   queryBase: string;
 }
@@ -48,18 +48,54 @@ export function TransactionTable({
             Transaction History
           </h2>
           <p className="text-sm text-[var(--tn-muted)]">
-            {total.toLocaleString("en-US")} matching transactions
+            {total.toLocaleString("en-US")} matching{" "}
+            {type === "deposit" ? "Deposit" : "Withdrawal"} transactions
+            {" · "}
+            ≥ 50 USDT
           </p>
         </div>
         <a
-          href={`/api/export?${queryBase}&type=${type === "all" ? "" : type}`}
+          href={`/api/export?${queryBase}&type=${type}`}
           className="inline-flex min-h-11 items-center rounded-xl border border-[var(--tn-border)] bg-white px-4 py-2 text-sm font-semibold text-[var(--tn-navy)] hover:bg-slate-50"
         >
           Export CSV
         </a>
       </div>
 
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row">
+      <div
+        className="mb-4 flex gap-2"
+        role="tablist"
+        aria-label="Transaction history type"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={type === "deposit"}
+          onClick={() => onTypeChange("deposit")}
+          className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-bold sm:flex-none ${
+            type === "deposit"
+              ? "bg-[var(--tn-deposit)] text-white"
+              : "border border-[var(--tn-border)] bg-white text-[var(--tn-navy)] hover:bg-slate-50"
+          }`}
+        >
+          Deposit
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={type === "withdraw"}
+          onClick={() => onTypeChange("withdraw")}
+          className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-bold sm:flex-none ${
+            type === "withdraw"
+              ? "bg-[var(--tn-withdraw)] text-white"
+              : "border border-[var(--tn-border)] bg-white text-[var(--tn-navy)] hover:bg-slate-50"
+          }`}
+        >
+          Withdrawal
+        </button>
+      </div>
+
+      <div className="mb-4">
         <form
           className="flex flex-1 gap-2"
           onSubmit={(e) => {
@@ -85,27 +121,18 @@ export function TransactionTable({
             Search
           </button>
         </form>
-        <label className="sr-only" htmlFor="tx-type">
-          Transaction type
-        </label>
-        <select
-          id="tx-type"
-          value={type}
-          onChange={(e) =>
-            onTypeChange(e.target.value as "all" | "deposit" | "withdraw")
-          }
-          className="min-h-11 rounded-xl border border-[var(--tn-border)] px-3 text-sm"
-        >
-          <option value="all">All types</option>
-          <option value="deposit">Deposits</option>
-          <option value="withdraw">Withdrawals</option>
-        </select>
       </div>
 
       {loading && data.length === 0 ? (
         <LoadingSkeleton variant="table" />
       ) : data.length === 0 ? (
-        <EmptyState message="No transactions found." />
+        <EmptyState
+          message={
+            type === "deposit"
+              ? "No Deposit transactions ≥ 50 USDT found."
+              : "No Withdrawal transactions ≥ 50 USDT found."
+          }
+        />
       ) : (
         <>
           <div className="table-scroll rounded-xl border border-[var(--tn-border)]">
@@ -113,19 +140,19 @@ export function TransactionTable({
               <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-[var(--tn-muted)]">
                 <tr>
                   <th className="px-3 py-3">Type</th>
-                  <th className="px-3 py-3">Amount</th>
+                  <th className="px-3 py-3">Date / Time</th>
                   <th className="px-3 py-3">From</th>
                   <th className="px-3 py-3">To</th>
-                  <th className="px-3 py-3">Date/Time</th>
-                  <th className="px-3 py-3">Block</th>
+                  <th className="px-3 py-3">Amount</th>
                   <th className="px-3 py-3">Transaction Hash</th>
+                  <th className="px-3 py-3">Block</th>
                   <th className="px-3 py-3">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {data.map((tx) => (
                   <tr
-                    key={`${tx.txHash}-${tx.logIndex}-${tx.walletAddress}`}
+                    key={`${tx.txHash}-${tx.logIndex}-${tx.walletAddress}-${type}`}
                     className="cursor-pointer border-t border-[var(--tn-border)] hover:bg-slate-50"
                     onClick={() => setSelected(tx)}
                     onKeyDown={(e) => {
@@ -140,26 +167,16 @@ export function TransactionTable({
                     <td className="px-3 py-3">
                       <span
                         className={`inline-flex rounded-lg px-2 py-1 text-xs font-bold ${
-                          tx.walletType === "deposit"
+                          type === "deposit"
                             ? "bg-[var(--tn-deposit-bg)] text-[var(--tn-deposit)]"
                             : "bg-[var(--tn-withdraw-bg)] text-[var(--tn-withdraw)]"
                         }`}
                       >
-                        {tx.walletType === "deposit" ? "Deposit" : "Withdrawal"}
+                        {type === "deposit" ? "Deposit" : "Withdrawal"}
                       </span>
                     </td>
-                    <td
-                      className={`px-3 py-3 font-semibold ${
-                        tx.walletType === "deposit"
-                          ? "text-[var(--tn-deposit)]"
-                          : "text-[var(--tn-withdraw)]"
-                      }`}
-                      title={`${formatUsdtExact(tx.amountUsdt)} USDT`}
-                    >
-                      {formatSignedUsdt(
-                        tx.amountUsdt,
-                        tx.walletType === "deposit",
-                      )}
+                    <td className="px-3 py-3 text-xs text-[var(--tn-muted)]">
+                      {formatDisplayDateTime(tx.timestamp)}
                     </td>
                     <td className="px-3 py-3">
                       <a
@@ -185,11 +202,15 @@ export function TransactionTable({
                         {shortAddress(tx.toAddress)}
                       </a>
                     </td>
-                    <td className="px-3 py-3 text-xs text-[var(--tn-muted)]">
-                      {formatDisplayDateTime(tx.timestamp)}
-                    </td>
-                    <td className="px-3 py-3 font-mono text-xs">
-                      {tx.blockNumber.toLocaleString("en-US")}
+                    <td
+                      className={`px-3 py-3 font-semibold ${
+                        type === "deposit"
+                          ? "text-[var(--tn-deposit)]"
+                          : "text-[var(--tn-withdraw)]"
+                      }`}
+                      title={`${formatUsdtExact(tx.amountUsdt)} USDT`}
+                    >
+                      {formatSignedUsdt(tx.amountUsdt, type === "deposit")}
                     </td>
                     <td className="px-3 py-3">
                       <a
@@ -202,6 +223,9 @@ export function TransactionTable({
                       >
                         {shortAddress(tx.txHash, 6)}
                       </a>
+                    </td>
+                    <td className="px-3 py-3 font-mono text-xs">
+                      {tx.blockNumber.toLocaleString("en-US")}
                     </td>
                     <td className="px-3 py-3">
                       <span className="rounded-lg bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">

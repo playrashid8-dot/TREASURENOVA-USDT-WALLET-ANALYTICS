@@ -8,7 +8,7 @@ import { KpiCards } from "@/components/dashboard/KpiCards";
 import { WalletCards } from "@/components/dashboard/WalletCards";
 import { FlowChart } from "@/components/dashboard/FlowChart";
 import { DailyStatsTable } from "@/components/dashboard/DailyStatsTable";
-import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
+import { LastCompletedDays } from "@/components/dashboard/LastCompletedDays";
 import { TransactionTable } from "@/components/dashboard/TransactionTable";
 import { SyncStatus } from "@/components/dashboard/SyncStatus";
 import { Footer } from "@/components/dashboard/Footer";
@@ -16,6 +16,8 @@ import { MobileNav } from "@/components/dashboard/MobileNav";
 import { ConfigBanner } from "@/components/dashboard/ConfigBanner";
 import type { DateRangePreset, KpiSummary, DailyStatRow, TransactionRow, WalletCardData, SyncStatusResponse } from "@/types/analytics";
 import { getSupabaseBrowser } from "@/lib/supabase/client";
+import { buildLastCompletedDaysSummary } from "@/lib/analytics/calculations";
+import { addUtcDays, utcTodayKey } from "@/lib/utils/dates";
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
@@ -45,13 +47,13 @@ export default function HomePage() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [search, setSearch] = useState("");
-  const [txType, setTxType] = useState<"all" | "deposit" | "withdraw">("all");
+  const [txType, setTxType] = useState<"deposit" | "withdraw">("deposit");
   const [page, setPage] = useState(1);
 
   const [kpi, setKpi] = useState<KpiSummary | null>(null);
   const [daily, setDaily] = useState<DailyStatRow[]>([]);
+  const [lastFourDays, setLastFourDays] = useState<DailyStatRow[]>([]);
   const [wallets, setWallets] = useState<WalletCardData[]>([]);
-  const [recent, setRecent] = useState<TransactionRow[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [txTotal, setTxTotal] = useState(0);
   const [txTotalPages, setTxTotalPages] = useState(1);
@@ -70,25 +72,30 @@ export default function HomePage() {
   const loadCore = useCallback(async () => {
     try {
       setError(null);
-      const [dash, stats, walletRes, sync, recentRes] = await Promise.all([
+      const today = utcTodayKey();
+      const lastFourFrom = addUtcDays(today, -4);
+      const lastFourTo = addUtcDays(today, -1);
+      const lastFourQuery = buildQuery("custom", lastFourFrom, lastFourTo);
+
+      const [dash, stats, lastFourStats, walletRes, sync] = await Promise.all([
         fetchJson<KpiSummary>(`/api/dashboard?${queryBase}`),
         fetchJson<{ data: DailyStatRow[]; configError?: string | null }>(
           `/api/daily-stats?${queryBase}`,
+        ),
+        fetchJson<{ data: DailyStatRow[]; configError?: string | null }>(
+          `/api/daily-stats?${lastFourQuery}`,
         ),
         fetchJson<{ wallets: WalletCardData[]; configError?: string | null }>(
           "/api/wallets",
         ),
         fetchJson<SyncStatusResponse>("/api/sync-status"),
-        fetchJson<{ data: TransactionRow[] }>(
-          `/api/transactions?${queryBase}&limit=15&page=1`,
-        ),
       ]);
 
       setKpi(dash);
       setDaily(stats.data);
+      setLastFourDays(buildLastCompletedDaysSummary(lastFourStats.data, 4));
       setWallets(walletRes.wallets);
       setSyncStatus(sync);
-      setRecent(recentRes.data);
       setLastFetchAt(new Date().toISOString());
     } catch (err) {
       setError(
@@ -213,6 +220,10 @@ export default function HomePage() {
         </section>
 
         <section className="mt-6">
+          <LastCompletedDays data={lastFourDays} loading={loading} />
+        </section>
+
+        <section className="mt-6">
           <WalletCards wallets={wallets} loading={loading} />
         </section>
 
@@ -226,10 +237,6 @@ export default function HomePage() {
             loading={loading}
             queryBase={queryBase}
           />
-        </section>
-
-        <section className="mt-6">
-          <RecentTransactions data={recent} loading={loading} />
         </section>
 
         <section id="transactions" className="mt-6 scroll-mt-24">

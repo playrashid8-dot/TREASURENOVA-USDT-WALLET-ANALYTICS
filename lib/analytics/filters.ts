@@ -2,9 +2,12 @@ import { z } from "zod";
 import { parsePreset, resolveDateRange } from "@/lib/utils/dates";
 import type { DateRange } from "@/types/analytics";
 import {
+  DEPOSIT_WALLET,
   MAX_TRANSACTION_PAGE_SIZE,
   MIN_DISPLAY_USDT_AMOUNT,
+  WITHDRAW_WALLET,
 } from "@/lib/config";
+import { normalizeAddress } from "@/lib/utils/addresses";
 
 export const dateRangeQuerySchema = z.object({
   preset: z.string().optional(),
@@ -16,11 +19,25 @@ export const transactionsQuerySchema = z.object({
   preset: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
-  type: z.enum(["deposit", "withdraw", "all"]).optional(),
+  type: z.enum(["deposit", "withdraw"]).optional(),
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(MAX_TRANSACTION_PAGE_SIZE).optional(),
   search: z.string().max(128).optional(),
 });
+
+/**
+ * Transaction History filters (intentionally different from Daily Analytics):
+ * - Deposit: to == Deposit Wallet (IN)
+ * - Withdrawal: from == Withdraw Wallet (OUT)
+ */
+export function applyTransactionHistoryTypeFilter<
+  T extends { eq: (col: string, val: string) => T },
+>(query: T, type: "deposit" | "withdraw"): T {
+  if (type === "deposit") {
+    return query.eq("to_address", normalizeAddress(DEPOSIT_WALLET));
+  }
+  return query.eq("from_address", normalizeAddress(WITHDRAW_WALLET));
+}
 
 export function dateRangeFromSearchParams(
   params: URLSearchParams,

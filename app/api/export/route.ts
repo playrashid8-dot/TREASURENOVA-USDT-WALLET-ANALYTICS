@@ -2,6 +2,7 @@ import { MAX_TRANSACTION_PAGE_SIZE } from "@/lib/config";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import {
   applyMinDisplayAmountFilter,
+  applyTransactionHistoryTypeFilter,
   dateRangeFromSearchParams,
 } from "@/lib/analytics/filters";
 import {
@@ -30,7 +31,8 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const range = dateRangeFromSearchParams(searchParams);
-    const type = searchParams.get("type") || "all";
+    const typeParam = searchParams.get("type") || "deposit";
+    const type = typeParam === "withdraw" ? "withdraw" : "deposit";
 
     const supabase = getSupabaseAdmin();
     let query = supabase
@@ -45,9 +47,7 @@ export async function GET(request: Request) {
 
     if (range.from) query = query.gte("timestamp", range.from);
     if (range.to) query = query.lte("timestamp", range.to);
-    if (type === "deposit" || type === "withdraw") {
-      query = query.eq("wallet_type", type);
-    }
+    query = applyTransactionHistoryTypeFilter(query, type);
 
     query = query.limit(Math.min(MAX_TRANSACTION_PAGE_SIZE * 50, 5000));
 
@@ -71,7 +71,7 @@ export async function GET(request: Request) {
     const lines = (data ?? []).map((row) =>
       [
         escapeCsv(String(row.timestamp).slice(0, 10)),
-        escapeCsv(row.wallet_type === "deposit" ? "Deposit" : "Withdrawal"),
+        escapeCsv(type === "deposit" ? "Deposit" : "Withdrawal"),
         escapeCsv(Number(row.amount_usdt) || 0),
         escapeCsv(row.from_address),
         escapeCsv(row.to_address),

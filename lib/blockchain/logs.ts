@@ -19,7 +19,7 @@ import type { ValidatedTransfer } from "@/types/blockchain";
 import { normalizeAddress } from "@/lib/utils/addresses";
 import { blockTimestampToIso } from "@/lib/utils/dates";
 import { rawToUsdt } from "@/lib/utils/format";
-import { classifyTransfer } from "./validation";
+import { classifyIndexedTransferRoles } from "./validation";
 import {
   getBlockTimestamp,
   getChainId,
@@ -173,11 +173,13 @@ async function getLogsWithRetry(filter: {
 
 /**
  * Fetch Transfer logs where `to` matches any of the given addresses,
- * adapting the block range down when the RPC rejects the query size.
+ * and optionally where `from` matches (Withdraw Wallet OUT for history).
+ * Adapts the block range down when the RPC rejects the query size.
  */
 async function fetchTransferLogsAdaptive(options: {
   contractAddress: string;
   toAddresses: string[];
+  fromAddresses?: string[];
   fromBlock: number;
   toBlock: number;
   preferredChunk: number;
@@ -186,15 +188,22 @@ async function fetchTransferLogsAdaptive(options: {
   scannedTo: number;
   usedChunk: number;
 }> {
-  const { contractAddress, toAddresses, fromBlock, toBlock } = options;
+  const {
+    contractAddress,
+    toAddresses,
+    fromAddresses = [],
+    fromBlock,
+    toBlock,
+  } = options;
   let chunkEnd = Math.min(fromBlock + options.preferredChunk - 1, toBlock);
   let attemptChunk = chunkEnd - fromBlock + 1;
 
   for (;;) {
     try {
-      const addresses = toAddresses.filter((to) => isAddress(to));
-      const batches = await Promise.all(
-        addresses.map((to) =>
+      const toList = toAddresses.filter((to) => isAddress(to));
+      const fromList = fromAddresses.filter((from) => isAddress(from));
+      const batches = await Promise.all([
+        ...toList.map((to) =>
           getLogsWithRetry({
             address: contractAddress,
             fromBlock,
@@ -202,9 +211,26 @@ async function fetchTransferLogsAdaptive(options: {
             topics: [TRANSFER_EVENT_TOPIC, null, addressToTopic(to)],
           }),
         ),
-      );
+        ...fromList.map((from) =>
+          getLogsWithRetry({
+            address: contractAddress,
+            fromBlock,
+            toBlock: chunkEnd,
+            topics: [TRANSFER_EVENT_TOPIC, addressToTopic(from), null],
+          }),
+        ),
+      ]);
+      // Deduplicate identical logs from overlapping topic1/topic2 queries
+      const seen = new Set<string>();
+      const logs: Log[] = [];
+      for (const log of batches.flat()) {
+        const key = `${log.transactionHash}:${log.index}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        logs.push(log);
+      }
       return {
-        logs: batches.flat(),
+        logs,
         scannedTo: chunkEnd,
         usedChunk: attemptChunk,
       };
@@ -274,6 +300,12 @@ async function fetchSqdPage(
         address: [normalizeAddress(token)],
         topic0: [TRANSFER_EVENT_TOPIC],
         topic2: [topicAddress(WITHDRAW_WALLET)],
+      },
+      // Withdraw Wallet OUT — Transaction History only (daily analytics ignores OUT)
+      {
+        address: [normalizeAddress(token)],
+        topic0: [TRANSFER_EVENT_TOPIC],
+        topic1: [topicAddress(WITHDRAW_WALLET)],
       },
     ],
   };
@@ -358,7 +390,7 @@ function decodeTransferLog(log: {
   }
 }
 
-function buildValidatedTransfer(options: {
+function buildValidatedTransfers(options: {
   txHash: string;
   logIndex: number;
   blockNumber: number;
@@ -371,9 +403,9 @@ function buildValidatedTransfer(options: {
   tokenSymbol: string;
   tokenContract: string;
   status: "success" | "failed";
-}): ValidatedTransfer | null {
+}): ValidatedTransfer[] {
   if (options.status !== "success") {
-    return null;
+    return [];
   }
 
   if (
@@ -381,71 +413,70 @@ function buildValidatedTransfer(options: {
     normalizeAddress(options.tokenContract) !==
       normalizeAddress(USDT_CONTRACT_ADDRESS)
   ) {
-    return null;
+    return [];
   }
 
-  const walletType = classifyTransfer(options.to);
-  if (!walletType) {
-    return null;
+  const roles = classifyIndexedTransferRoles(options.from, options.to);
+  if (roles.length === 0) {
+    return [];
   }
 
   const txHash = options.txHash.toLowerCase();
   if (!/^0x[a-f0-9]{64}$/.test(txHash)) {
-    return null;
+    return [];
   }
 
   if (!Number.isFinite(options.blockNumber) || options.blockNumber <= 0) {
-    return null;
+    return [];
   }
 
   if (!Number.isFinite(options.logIndex) || options.logIndex < 0) {
-    return null;
+    return [];
   }
 
   const decimals = options.tokenDecimals;
   if (!Number.isFinite(decimals) || decimals < 0 || decimals > 36) {
-    return null;
+    return [];
   }
 
   if (options.value <= 0n) {
-    return null;
+    return [];
   }
 
   const amountRaw = options.value.toString();
   const amountUsdt = rawToUsdt(amountRaw, decimals);
   if (!Number.isFinite(amountUsdt) || amountUsdt <= 0) {
-    return null;
+    return [];
   }
 
   let timestamp: string;
   try {
     timestamp = blockTimestampToIso(options.timestampUnix);
   } catch {
-    return null;
+    return [];
   }
 
-  const walletAddress =
-    walletType === "deposit"
-      ? normalizeAddress(DEPOSIT_WALLET)
-      : normalizeAddress(WITHDRAW_WALLET);
+  const fromAddress = normalizeAddress(options.from);
+  const toAddress = normalizeAddress(options.to);
+  const tokenContract = normalizeAddress(options.tokenContract);
 
-  return {
+  return roles.map((role) => ({
     txHash,
     logIndex: options.logIndex,
-    walletAddress,
-    walletType,
-    tokenContract: normalizeAddress(options.tokenContract),
-    fromAddress: normalizeAddress(options.from),
-    toAddress: normalizeAddress(options.to),
+    walletAddress: role.walletAddress,
+    walletType: role.walletType,
+    tokenContract,
+    fromAddress,
+    toAddress,
     amountRaw,
     amountUsdt,
     blockNumber: options.blockNumber,
     blockHash: options.blockHash ? options.blockHash.toLowerCase() : null,
     timestamp,
-    status: "success",
+    status: "success" as const,
     tokenSymbol: options.tokenSymbol || "USDT",
     tokenDecimals: decimals,
-  };
+  }));
 }
 
 async function validateAndEnrichRpcLog(
@@ -458,16 +489,16 @@ async function validateAndEnrichRpcLog(
     timestampCache: Map<number, number>;
     receiptCache: Map<string, number | null>;
   },
-): Promise<ValidatedTransfer | null> {
+): Promise<ValidatedTransfer[]> {
   if (options.chainId !== CHAIN_ID) {
-    return null;
+    return [];
   }
 
   if (
     !log.address ||
     normalizeAddress(log.address) !== normalizeAddress(options.tokenContract)
   ) {
-    return null;
+    return [];
   }
 
   const decoded = decodeTransferLog({
@@ -475,12 +506,12 @@ async function validateAndEnrichRpcLog(
     data: log.data,
   });
   if (!decoded) {
-    return null;
+    return [];
   }
 
   const txHash = log.transactionHash?.toLowerCase();
   if (!txHash) {
-    return null;
+    return [];
   }
 
   let receiptStatus = options.receiptCache.get(txHash);
@@ -502,7 +533,7 @@ async function validateAndEnrichRpcLog(
 
   // Logs in a mined block imply success; accept when receipt is unavailable.
   if (receiptStatus !== 1 && receiptStatus !== null) {
-    return null;
+    return [];
   }
 
   const blockNumber = Number(log.blockNumber);
@@ -512,7 +543,7 @@ async function validateAndEnrichRpcLog(
     options.timestampCache.set(blockNumber, unixTs);
   }
 
-  return buildValidatedTransfer({
+  return buildValidatedTransfers({
     txHash,
     logIndex: Number(log.index),
     blockNumber,
@@ -577,7 +608,7 @@ function transfersFromSqdBlock(
       continue;
     }
 
-    const validated = buildValidatedTransfer({
+    const validated = buildValidatedTransfers({
       txHash,
       logIndex: Number(log.logIndex),
       blockNumber: Number(block.header.number),
@@ -591,9 +622,7 @@ function transfersFromSqdBlock(
       tokenContract: options.tokenContract,
       status: "success",
     });
-    if (validated) {
-      out.push(validated);
-    }
+    out.push(...validated);
   }
   return out;
 }
@@ -769,6 +798,7 @@ async function scanViaRpc(options: {
   const toAddresses = [DEPOSIT_WALLET, WITHDRAW_WALLET].filter((a) =>
     isAddress(a),
   );
+  const fromAddresses = [WITHDRAW_WALLET].filter((a) => isAddress(a));
 
   let cursor = Math.max(0, options.startBlock);
   const endBlock = Math.max(cursor, options.endBlock);
@@ -783,6 +813,7 @@ async function scanViaRpc(options: {
       const { logs, scannedTo, usedChunk } = await fetchTransferLogsAdaptive({
         contractAddress: options.tokenContract,
         toAddresses,
+        fromAddresses,
         fromBlock: cursor,
         toBlock: endBlock,
         preferredChunk,
@@ -805,7 +836,7 @@ async function scanViaRpc(options: {
             timestampCache,
             receiptCache,
           });
-          if (validated) transfers.push(validated);
+          transfers.push(...validated);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           errors.push(`log ${log.transactionHash}:${log.index}: ${msg}`);

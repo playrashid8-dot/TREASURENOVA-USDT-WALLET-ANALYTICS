@@ -11,6 +11,7 @@ import {
   paginate,
   sumDailyStats,
   splitCompletedAndLive,
+  buildLastCompletedDaysSummary,
 } from "@/lib/analytics/calculations";
 import { meetsMinDisplayUsdtAmount } from "@/lib/analytics/filters";
 import { MIN_DISPLAY_USDT_AMOUNT } from "@/lib/config";
@@ -22,8 +23,11 @@ import {
   isCompletedUtcDate,
   isLiveUtcDate,
   addUtcDays,
+  lastCompletedUtcDateKeys,
+  formatShortUtcDate,
 } from "@/lib/utils/dates";
-import { classifyTransfer, validateTokenTransfer } from "@/lib/blockchain/validation";
+import { classifyTransfer, classifyIndexedTransferRoles, validateTokenTransfer, validateTokenTransfers } from "@/lib/blockchain/validation";
+import { applyTransactionHistoryTypeFilter } from "@/lib/analytics/filters";
 import { resolveScanStartBlock } from "@/lib/blockchain/logs";
 import type { EtherscanTokenTransfer } from "@/types/blockchain";
 
@@ -175,6 +179,79 @@ describe("completed vs live daily totals", () => {
   });
 });
 
+describe("last 4 completed UTC days", () => {
+  const now = new Date("2026-09-26T15:30:00.000Z");
+
+  it("returns yesterday through yesterday-3 newest first", () => {
+    expect(lastCompletedUtcDateKeys(4, now)).toEqual([
+      "2026-09-25",
+      "2026-09-24",
+      "2026-09-23",
+      "2026-09-22",
+    ]);
+  });
+
+  it("never includes today's live date", () => {
+    const keys = lastCompletedUtcDateKeys(4, now);
+    expect(keys).not.toContain("2026-09-26");
+    expect(keys.every((k) => isCompletedUtcDate(k, now))).toBe(true);
+  });
+
+  it("fills missing indexed days with zeros", () => {
+    const rows = buildLastCompletedDaysSummary(
+      [
+        {
+          date: "2026-09-25",
+          depositAmount: 1000,
+          withdrawalAmount: 400,
+          netCashFlow: 600,
+          depositCount: 3,
+          withdrawalCount: 2,
+        },
+        {
+          date: "2026-09-26",
+          depositAmount: 50,
+          withdrawalAmount: 10,
+          netCashFlow: 40,
+          depositCount: 1,
+          withdrawalCount: 1,
+        },
+      ],
+      4,
+      now,
+    );
+
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.date)).toEqual([
+      "2026-09-25",
+      "2026-09-24",
+      "2026-09-23",
+      "2026-09-22",
+    ]);
+    expect(rows[0]).toMatchObject({
+      depositAmount: 1000,
+      withdrawalAmount: 400,
+      netCashFlow: 600,
+      depositCount: 3,
+      withdrawalCount: 2,
+      isCompleted: true,
+      isLive: false,
+    });
+    expect(rows[1]).toMatchObject({
+      depositAmount: 0,
+      withdrawalAmount: 0,
+      netCashFlow: 0,
+      depositCount: 0,
+      withdrawalCount: 0,
+    });
+    expect(rows.every((r) => !r.isLive && r.isCompleted)).toBe(true);
+  });
+
+  it("formats short UTC dates like 25 Sep", () => {
+    expect(formatShortUtcDate("2026-09-25")).toBe("25 Sep");
+  });
+});
+
 describe("pagination", () => {
   it("paginates arrays", () => {
     const items = [1, 2, 3, 4, 5];
@@ -248,7 +325,7 @@ describe("date filtering", () => {
   });
 });
 
-describe("deposit / withdrawal detection (IN only)", () => {
+describe("deposit / withdrawal detection (IN only for analytics)", () => {
   it("classifies transfer to deposit wallet as deposit", () => {
     const type = classifyTransfer(DEPOSIT);
     expect(type === "deposit" || type === null).toBe(true);
@@ -265,12 +342,81 @@ describe("deposit / withdrawal detection (IN only)", () => {
     ).toBeNull();
   });
 
-  it("does not classify by sender — wallet OUT is never a deposit or withdrawal", () => {
+  it("does not classify by sender — wallet OUT is never a deposit or withdrawal in analytics", () => {
     // classifyTransfer only inspects `to`; a transfer FROM the deposit wallet
     // to an unrelated address must not be counted as a deposit.
     expect(
       classifyTransfer("0x00000000000000000000000000000000000000aa"),
     ).toBeNull();
+  });
+});
+
+describe("transaction history indexing roles", () => {
+  it("indexes Deposit Wallet IN as deposit", () => {
+    const roles = classifyIndexedTransferRoles(
+      "0x1111111111111111111111111111111111111111",
+      DEPOSIT,
+    );
+    expect(roles).toEqual([
+      { walletType: "deposit", walletAddress: DEPOSIT.toLowerCase() },
+    ]);
+  });
+
+  it("indexes Withdraw Wallet IN as withdraw (daily analytics)", () => {
+    const roles = classifyIndexedTransferRoles(
+      "0x1111111111111111111111111111111111111111",
+      WITHDRAW,
+    );
+    expect(roles).toEqual([
+      { walletType: "withdraw", walletAddress: WITHDRAW.toLowerCase() },
+    ]);
+  });
+
+  it("indexes Withdraw Wallet OUT as withdraw (history only)", () => {
+    const roles = classifyIndexedTransferRoles(
+      WITHDRAW,
+      "0x2222222222222222222222222222222222222222",
+    );
+    expect(roles).toEqual([
+      { walletType: "withdraw", walletAddress: WITHDRAW.toLowerCase() },
+    ]);
+  });
+
+  it("does not index Deposit Wallet OUT", () => {
+    const roles = classifyIndexedTransferRoles(
+      DEPOSIT,
+      "0x2222222222222222222222222222222222222222",
+    );
+    expect(roles).toEqual([]);
+  });
+
+  it("indexes Withdraw→Deposit as both deposit IN and withdraw OUT", () => {
+    const roles = classifyIndexedTransferRoles(WITHDRAW, DEPOSIT);
+    expect(roles).toEqual([
+      { walletType: "deposit", walletAddress: DEPOSIT.toLowerCase() },
+      { walletType: "withdraw", walletAddress: WITHDRAW.toLowerCase() },
+    ]);
+  });
+});
+
+describe("transaction history type filters", () => {
+  it("filters deposits by to_address and withdrawals by from_address", () => {
+    const calls: Array<{ col: string; val: string }> = [];
+    const query = {
+      eq(col: string, val: string) {
+        calls.push({ col, val });
+        return this;
+      },
+    };
+    applyTransactionHistoryTypeFilter(query, "deposit");
+    expect(calls).toEqual([
+      { col: "to_address", val: DEPOSIT.toLowerCase() },
+    ]);
+    calls.length = 0;
+    applyTransactionHistoryTypeFilter(query, "withdraw");
+    expect(calls).toEqual([
+      { col: "from_address", val: WITHDRAW.toLowerCase() },
+    ]);
   });
 });
 
@@ -333,7 +479,7 @@ describe("transfer validation", () => {
     expect(result).toBeNull();
   });
 
-  it("rejects transfers whose to is not a tracked wallet (wallet OUT path)", () => {
+  it("rejects transfers whose to is not a tracked wallet (deposit OUT path)", () => {
     const result = validateTokenTransfer(
       {
         ...baseTx,
@@ -343,6 +489,22 @@ describe("transfer validation", () => {
       18,
     );
     expect(result).toBeNull();
+  });
+
+  it("indexes Withdraw Wallet OUT for transaction history", () => {
+    const results = validateTokenTransfers(
+      {
+        ...baseTx,
+        from: WITHDRAW,
+        to: "0x00000000000000000000000000000000000000bb",
+        value: "50000000000000000000", // 50 USDT @ 18 decimals
+      },
+      18,
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]?.walletType).toBe("withdraw");
+    expect(results[0]?.fromAddress).toBe(WITHDRAW.toLowerCase());
+    expect(results[0]?.toAddress).not.toBe(WITHDRAW.toLowerCase());
   });
 });
 

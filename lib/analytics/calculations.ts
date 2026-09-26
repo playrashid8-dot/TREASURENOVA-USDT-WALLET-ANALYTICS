@@ -1,5 +1,10 @@
 import type { DailyStatRow, DayFlowSummary } from "@/types/analytics";
-import { isCompletedUtcDate, isLiveUtcDate, utcTodayKey } from "@/lib/utils/dates";
+import {
+  isCompletedUtcDate,
+  isLiveUtcDate,
+  lastCompletedUtcDateKeys,
+  utcTodayKey,
+} from "@/lib/utils/dates";
 
 export function computeNetCashFlow(
   deposits: number,
@@ -116,4 +121,62 @@ export function paginate<T>(
     page: safePage,
     limit: safeLimit,
   };
+}
+
+/**
+ * Build Last N Completed Days rows from indexed daily_stats.
+ * Always excludes today. Missing dates show 0 (no fabricated data).
+ * Uses the same IN-only daily analytics already stored in daily_stats.
+ */
+export function buildLastCompletedDaysSummary(
+  rows: Array<{
+    date: string;
+    depositAmount: number;
+    withdrawalAmount: number;
+    netCashFlow?: number;
+    depositCount: number;
+    withdrawalCount: number;
+  }>,
+  count = 4,
+  now: Date = new Date(),
+): DailyStatRow[] {
+  const byDate = new Map(
+    rows.map((r) => [dateKeyFromRow(r.date), r] as const),
+  );
+
+  return lastCompletedUtcDateKeys(count, now).map((date) => {
+    const existing = byDate.get(date);
+    if (!existing) {
+      return {
+        date,
+        depositAmount: 0,
+        withdrawalAmount: 0,
+        netCashFlow: 0,
+        depositCount: 0,
+        withdrawalCount: 0,
+        isLive: false,
+        isCompleted: true,
+      };
+    }
+
+    const depositAmount = Number(existing.depositAmount) || 0;
+    const withdrawalAmount = Number(existing.withdrawalAmount) || 0;
+    return {
+      date,
+      depositAmount,
+      withdrawalAmount,
+      netCashFlow:
+        existing.netCashFlow !== undefined
+          ? Number(existing.netCashFlow) || 0
+          : computeNetCashFlow(depositAmount, withdrawalAmount),
+      depositCount: Number(existing.depositCount) || 0,
+      withdrawalCount: Number(existing.withdrawalCount) || 0,
+      isLive: false,
+      isCompleted: true,
+    };
+  });
+}
+
+function dateKeyFromRow(date: string): string {
+  return date.slice(0, 10);
 }

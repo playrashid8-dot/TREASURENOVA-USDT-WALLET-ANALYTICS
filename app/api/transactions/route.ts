@@ -2,6 +2,7 @@ import { MAX_TRANSACTION_PAGE_SIZE } from "@/lib/config";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import {
   applyMinDisplayAmountFilter,
+  applyTransactionHistoryTypeFilter,
   dateRangeFromSearchParams,
 } from "@/lib/analytics/filters";
 import {
@@ -22,7 +23,8 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const range = dateRangeFromSearchParams(searchParams);
-  const type = searchParams.get("type") || "all";
+  const typeParam = searchParams.get("type") || "deposit";
+  const type = typeParam === "withdraw" ? "withdraw" : "deposit";
   const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const limit = Math.min(
     MAX_TRANSACTION_PAGE_SIZE,
@@ -57,13 +59,14 @@ export async function GET(request: Request) {
       .eq("status", "success")
       .order("timestamp", { ascending: false });
 
+    // amount >= 50 USDT BEFORE pagination
     query = applyMinDisplayAmountFilter(query);
 
     if (range.from) query = query.gte("timestamp", range.from);
     if (range.to) query = query.lte("timestamp", range.to);
-    if (type === "deposit" || type === "withdraw") {
-      query = query.eq("wallet_type", type);
-    }
+
+    // Deposit = IN to deposit wallet; Withdrawal = OUT from withdraw wallet
+    query = applyTransactionHistoryTypeFilter(query, type);
 
     if (search) {
       const s = search.toLowerCase();
@@ -93,7 +96,8 @@ export async function GET(request: Request) {
       txHash: r.tx_hash,
       logIndex: r.log_index,
       walletAddress: r.wallet_address,
-      walletType: r.wallet_type,
+      // Label by history tab semantics, not raw wallet_type from analytics IN rows
+      walletType: type,
       tokenContract: r.token_contract,
       fromAddress: r.from_address,
       toAddress: r.to_address,

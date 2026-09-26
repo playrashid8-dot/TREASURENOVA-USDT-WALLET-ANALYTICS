@@ -66,11 +66,13 @@ export async function GET(request: Request) {
     try {
       const supabase = getSupabaseAdmin();
       for (const w of base) {
+        // totalIncoming = Transfer INs only (to == wallet); OUT rows ignored
         const { data, error } = await supabase
           .from("transactions")
           .select("amount_usdt")
           .eq("wallet_address", normalizeAddress(w.address))
           .eq("wallet_type", w.walletType)
+          .eq("to_address", normalizeAddress(w.address))
           .eq("status", "success");
 
         if (!error && data) {

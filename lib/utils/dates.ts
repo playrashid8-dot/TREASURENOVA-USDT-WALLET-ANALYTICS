@@ -81,6 +81,45 @@ export function addUtcDays(dateKey: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Last N fully completed UTC calendar days (excludes today).
+ * Returned newest-first: yesterday, yesterday-1, …
+ */
+export function lastCompletedUtcDateKeys(
+  count: number,
+  now: Date = new Date(),
+): string[] {
+  const n = Math.max(0, Math.floor(count));
+  const today = utcTodayKey(now);
+  const keys: string[] = [];
+  for (let i = 1; i <= n; i++) {
+    keys.push(addUtcDays(today, -i));
+  }
+  return keys;
+}
+
+/** Short UTC display e.g. "25 Sep". */
+export function formatShortUtcDate(iso: string): string {
+  const key = dateKeyUtc(iso);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return iso;
+  const d = new Date(`${key}T12:00:00.000Z`);
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  return `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
+}
+
 export function formatDisplayDate(iso: string): string {
   const key = dateKeyUtc(iso);
   if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
