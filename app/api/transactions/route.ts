@@ -68,17 +68,14 @@ export async function GET(request: Request) {
     // Deposit = IN to deposit wallet; Withdrawal = OUT from withdraw wallet
     query = applyTransactionHistoryTypeFilter(query, type);
 
+    // Address search: Deposit History → sender (from); Withdrawal History → receiver (to)
     if (search) {
       const s = search.toLowerCase();
-      if (s.startsWith("0x") && s.length >= 10) {
-        const norm = normalizeAddress(s);
-        query = query.or(
-          `tx_hash.eq.${norm},from_address.eq.${norm},to_address.eq.${norm},wallet_address.eq.${norm}`,
-        );
+      const field = type === "deposit" ? "from_address" : "to_address";
+      if (s.startsWith("0x") && s.length === 42) {
+        query = query.eq(field, normalizeAddress(s));
       } else {
-        query = query.or(
-          `tx_hash.ilike.%${search}%,from_address.ilike.%${search}%,to_address.ilike.%${search}%`,
-        );
+        query = query.ilike(field, `%${search}%`);
       }
     }
 

@@ -1,24 +1,32 @@
 @import "tailwindcss";
 
 :root {
+  --tn-bg: #050b18;
+  --tn-bg-mid: #0a1628;
+  --tn-surface: #0c1a2e;
+  --tn-surface-2: #111f36;
   --tn-navy: #0b1f3a;
   --tn-navy-soft: #1a3358;
-  --tn-text: #0f172a;
-  --tn-muted: #64748b;
-  --tn-border: #e2e8f0;
-  --tn-surface: #ffffff;
-  --tn-bg: #f5f7fb;
-  --tn-bg-accent: #eef3f9;
-  --tn-deposit: #15803d;
-  --tn-deposit-bg: #ecfdf5;
-  --tn-withdraw: #c2410c;
-  --tn-withdraw-bg: #fff7ed;
-  --tn-info: #1d4ed8;
-  --tn-info-bg: #eff6ff;
-  --tn-live: #16a34a;
-  --tn-warning: #b45309;
-  --tn-error: #b91c1c;
-  --tn-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04);
+  --tn-text: #f1f5f9;
+  --tn-muted: #8ba3c4;
+  --tn-border: rgba(56, 132, 255, 0.28);
+  --tn-border-strong: rgba(64, 150, 255, 0.45);
+  --tn-glow: 0 0 0 1px rgba(56, 132, 255, 0.22), 0 0 24px rgba(37, 99, 235, 0.12);
+  --tn-deposit: #2ee6a6;
+  --tn-deposit-dim: #14b88a;
+  --tn-deposit-bg: rgba(46, 230, 166, 0.1);
+  --tn-deposit-border: rgba(46, 230, 166, 0.45);
+  --tn-withdraw: #ff6b8a;
+  --tn-withdraw-dim: #e84a6f;
+  --tn-withdraw-bg: rgba(255, 107, 138, 0.1);
+  --tn-withdraw-border: rgba(255, 107, 138, 0.45);
+  --tn-info: #3b9eff;
+  --tn-info-bg: rgba(59, 158, 255, 0.12);
+  --tn-live: #22c55e;
+  --tn-warning: #f59e0b;
+  --tn-error: #f87171;
+  --tn-table-head: linear-gradient(180deg, #12233d 0%, #0d1c32 100%);
+  --tn-row-alt: rgba(15, 35, 60, 0.45);
   --font-display: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --font-body: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
@@ -51,9 +59,10 @@ body {
   font-family: var(--font-body);
   color: var(--tn-text);
   background:
-    radial-gradient(1200px 500px at 10% -10%, #dbe7f5 0%, transparent 55%),
-    radial-gradient(900px 400px at 90% 0%, #e8f0e9 0%, transparent 50%),
-    linear-gradient(180deg, #f7f9fc 0%, #eef2f7 100%);
+    radial-gradient(900px 420px at 12% -8%, rgba(37, 99, 235, 0.22) 0%, transparent 55%),
+    radial-gradient(700px 360px at 92% 8%, rgba(14, 165, 233, 0.12) 0%, transparent 50%),
+    radial-gradient(600px 400px at 50% 100%, rgba(46, 230, 166, 0.05) 0%, transparent 45%),
+    linear-gradient(180deg, #050b18 0%, #081222 45%, #050b18 100%);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
@@ -69,19 +78,48 @@ select {
 }
 
 :focus-visible {
-  outline: 2px solid #1d4ed8;
+  outline: 2px solid var(--tn-info);
   outline-offset: 2px;
 }
 
+.tn-shell {
+  border: 1px solid var(--tn-border-strong);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(12, 26, 46, 0.92) 0%, rgba(8, 18, 34, 0.96) 100%);
+  box-shadow:
+    0 0 0 1px rgba(56, 132, 255, 0.15),
+    0 0 40px rgba(37, 99, 235, 0.15),
+    inset 0 1px 0 rgba(147, 197, 253, 0.08);
+}
+
 .tn-card {
-  background: var(--tn-surface);
+  background: linear-gradient(180deg, rgba(14, 28, 48, 0.95) 0%, rgba(10, 20, 36, 0.98) 100%);
   border: 1px solid var(--tn-border);
   border-radius: 16px;
-  box-shadow: var(--tn-shadow);
+  box-shadow: var(--tn-glow);
+}
+
+.tn-card-deposit {
+  border-color: var(--tn-deposit-border);
+  box-shadow:
+    0 0 0 1px rgba(46, 230, 166, 0.18),
+    0 0 28px rgba(46, 230, 166, 0.12);
+}
+
+.tn-card-withdraw {
+  border-color: var(--tn-withdraw-border);
+  box-shadow:
+    0 0 0 1px rgba(255, 107, 138, 0.18),
+    0 0 28px rgba(255, 107, 138, 0.12);
 }
 
 .tn-skeleton {
-  background: linear-gradient(90deg, #eef2f7 25%, #f8fafc 50%, #eef2f7 75%);
+  background: linear-gradient(
+    90deg,
+    rgba(30, 50, 80, 0.5) 25%,
+    rgba(50, 80, 120, 0.45) 50%,
+    rgba(30, 50, 80, 0.5) 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
   border-radius: 8px;
@@ -96,6 +134,22 @@ select {
   }
 }
 
+@keyframes pulse-live {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+  }
+  50% {
+    opacity: 0.75;
+    box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
+  }
+}
+
+.tn-live-dot {
+  animation: pulse-live 1.6s ease-in-out infinite;
+}
+
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
@@ -105,8 +159,16 @@ select {
   min-width: 720px;
 }
 
+.tn-tx-table {
+  min-width: 920px;
+}
+
 @media (max-width: 640px) {
   .table-scroll table {
-    min-width: 640px;
+    min-width: 560px;
+  }
+
+  .tn-tx-table {
+    min-width: 780px;
   }
 }
