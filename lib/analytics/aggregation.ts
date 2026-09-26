@@ -2,44 +2,48 @@ import { DEPOSIT_WALLET, WITHDRAW_WALLET } from "@/lib/config";
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { normalizeAddress } from "@/lib/utils/addresses";
 
+const TX_PAGE_SIZE = 1000;
+
+export type DailyAggBucket = {
+  deposit_amount: number;
+  withdrawal_amount: number;
+  deposit_count: number;
+  withdrawal_count: number;
+};
+
+export type TransactionAggRow = {
+  timestamp: string;
+  wallet_type: string;
+  amount_usdt: number | string;
+  status: string;
+  to_address: string | null;
+};
+
 /**
- * Rebuild daily_stats for a specific UTC date (or all dates if omitted).
- * Counts only indexed USDT Transfer INs (to == deposit/withdraw wallet).
- * Withdraw Wallet OUT rows may exist for Transaction History but are ignored here.
- * Idempotent — safe to call after upserts and for reconciliation repairs.
+ * Aggregate IN-only daily analytics from transaction rows.
+ * Deposit = to == Deposit Wallet; Withdrawal = to == Withdraw Wallet.
+ * Does NOT apply the Transaction History 50 USDT display filter.
+ * Withdraw/Deposit Wallet OUT rows are ignored.
  */
-export async function reconcileDailyStats(date?: string): Promise<void> {
-  const supabase = getSupabaseAdmin();
-  const depositAddr = normalizeAddress(DEPOSIT_WALLET);
-  const withdrawAddr = normalizeAddress(WITHDRAW_WALLET);
+export function aggregateDailyFromTransactions(
+  rows: TransactionAggRow[],
+  options?: {
+    date?: string;
+    depositAddress?: string;
+    withdrawAddress?: string;
+  },
+): Map<string, DailyAggBucket> {
+  const depositAddr = normalizeAddress(
+    options?.depositAddress ?? DEPOSIT_WALLET,
+  );
+  const withdrawAddr = normalizeAddress(
+    options?.withdrawAddress ?? WITHDRAW_WALLET,
+  );
+  const date = options?.date;
 
-  let query = supabase
-    .from("transactions")
-    .select("timestamp, wallet_type, amount_usdt, status, to_address");
+  const byDate = new Map<string, DailyAggBucket>();
 
-  if (date) {
-    const start = `${date}T00:00:00.000Z`;
-    const end = `${date}T23:59:59.999Z`;
-    query = query.gte("timestamp", start).lte("timestamp", end);
-  }
-
-  const { data, error } = await query;
-  if (error) {
-    console.error("[aggregation] Failed to load transactions:", error.message);
-    throw new Error(error.message);
-  }
-
-  const byDate = new Map<
-    string,
-    {
-      deposit_amount: number;
-      withdrawal_amount: number;
-      deposit_count: number;
-      withdrawal_count: number;
-    }
-  >();
-
-  for (const row of data ?? []) {
+  for (const row of rows) {
     if (row.status !== "success") continue;
     const d = String(row.timestamp).slice(0, 10);
     if (date && d !== date) continue;
@@ -54,6 +58,7 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
     const amount = Number(row.amount_usdt) || 0;
     const to = normalizeAddress(String(row.to_address ?? ""));
     // Daily analytics: IN only (to == wallet). OUT rows are excluded.
+    // No minimum amount — sub-50 USDT transfers still count.
     if (row.wallet_type === "deposit" && to === depositAddr) {
       bucket.deposit_amount += amount;
       bucket.deposit_count += 1;
@@ -65,7 +70,6 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
   }
 
   if (date && !byDate.has(date)) {
-    // Ensure zero row exists for explicit date reconcile when empty
     byDate.set(date, {
       deposit_amount: 0,
       withdrawal_amount: 0,
@@ -74,8 +78,60 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
     });
   }
 
+  return byDate;
+}
+
+async function fetchAllTransactionAggRows(date?: string): Promise<
+  TransactionAggRow[]
+> {
+  const supabase = getSupabaseAdmin();
+  const all: TransactionAggRow[] = [];
+  let from = 0;
+
+  for (;;) {
+    let query = supabase
+      .from("transactions")
+      .select("timestamp, wallet_type, amount_usdt, status, to_address")
+      .order("block_number", { ascending: true })
+      .order("log_index", { ascending: true })
+      .range(from, from + TX_PAGE_SIZE - 1);
+
+    if (date) {
+      const start = `${date}T00:00:00.000Z`;
+      const end = `${date}T23:59:59.999Z`;
+      query = query.gte("timestamp", start).lte("timestamp", end);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("[aggregation] Failed to load transactions:", error.message);
+      throw new Error(error.message);
+    }
+
+    const rows = (data ?? []) as TransactionAggRow[];
+    all.push(...rows);
+    if (rows.length < TX_PAGE_SIZE) break;
+    from += TX_PAGE_SIZE;
+  }
+
+  return all;
+}
+
+/**
+ * Rebuild daily_stats for a specific UTC date (or all dates if omitted).
+ * Counts only indexed USDT Transfer INs (to == deposit/withdraw wallet).
+ * Withdraw Wallet OUT rows may exist for Transaction History but are ignored here.
+ * Idempotent — safe to call after upserts and for reconciliation repairs.
+ *
+ * Paginates through all matching transactions (Supabase default cap is 1000).
+ */
+export async function reconcileDailyStats(date?: string): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const rows = await fetchAllTransactionAggRows(date);
+  const byDate = aggregateDailyFromTransactions(rows, { date });
+
   const now = new Date().toISOString();
-  const rows = Array.from(byDate.entries()).map(([d, b]) => ({
+  const upserts = Array.from(byDate.entries()).map(([d, b]) => ({
     date: d,
     deposit_amount: round6(b.deposit_amount),
     withdrawal_amount: round6(b.withdrawal_amount),
@@ -85,9 +141,9 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
     updated_at: now,
   }));
 
-  if (rows.length === 0) return;
+  if (upserts.length === 0) return;
 
-  const { error: upsertError } = await supabase.from("daily_stats").upsert(rows, {
+  const { error: upsertError } = await supabase.from("daily_stats").upsert(upserts, {
     onConflict: "date",
   });
 
@@ -99,6 +155,7 @@ export async function reconcileDailyStats(date?: string): Promise<void> {
 
 /**
  * Compare SUM(transactions IN) vs SUM(daily_stats) and repair if mismatched.
+ * Paginates transaction reads so totals are never truncated at 1000 rows.
  */
 export async function runReconciliationCheck(): Promise<{
   ok: boolean;
@@ -109,28 +166,15 @@ export async function runReconciliationCheck(): Promise<{
   statsWithdrawals: number;
 }> {
   const supabase = getSupabaseAdmin();
-  const depositAddr = normalizeAddress(DEPOSIT_WALLET);
-  const withdrawAddr = normalizeAddress(WITHDRAW_WALLET);
 
-  const { data: txs, error: txErr } = await supabase
-    .from("transactions")
-    .select("wallet_type, amount_usdt, status, to_address");
-
-  if (txErr) {
-    console.error("[reconciliation] TX query failed:", txErr.message);
-    throw new Error(txErr.message);
-  }
+  const txs = await fetchAllTransactionAggRows();
+  const byDate = aggregateDailyFromTransactions(txs);
 
   let txDeposits = 0;
   let txWithdrawals = 0;
-  for (const row of txs ?? []) {
-    if (row.status !== "success") continue;
-    const amt = Number(row.amount_usdt) || 0;
-    const to = normalizeAddress(String(row.to_address ?? ""));
-    if (row.wallet_type === "deposit" && to === depositAddr) txDeposits += amt;
-    if (row.wallet_type === "withdraw" && to === withdrawAddr) {
-      txWithdrawals += amt;
-    }
+  for (const bucket of byDate.values()) {
+    txDeposits += bucket.deposit_amount;
+    txWithdrawals += bucket.withdrawal_amount;
   }
 
   const { data: stats, error: stErr } = await supabase

@@ -180,9 +180,14 @@ async function bumpDailyStats(transfers: ValidatedTransfer[]) {
 /**
  * Incremental / historical sync of USDT transfers for monitored wallets
  * via BSC RPC eth_getLogs (chunked, resumable).
+ *
+ * Optional startBlock/endBlock runs a targeted backfill for that inclusive
+ * range without lowering sync_state when the tip is already ahead.
  */
 export async function runSync(options?: {
   fullHistory?: boolean;
+  startBlock?: number;
+  endBlock?: number;
 }): Promise<SyncResult> {
   console.log("[sync] Sync started");
 
@@ -259,16 +264,22 @@ export async function runSync(options?: {
 
     const state = await getSyncState();
     const storedLastIndexed: number = state?.last_indexed_block ?? 0;
+    const targetedBackfill =
+      options?.startBlock != null &&
+      Number.isFinite(options.startBlock) &&
+      options.startBlock > 0;
+
     const lastIndexed = options?.fullHistory ? 0 : storedLastIndexed;
     let startBlock = options?.fullHistory
       ? resolveScanStartBlock(0)
       : resolveScanStartBlock(lastIndexed);
+    let endBlock = latestBlock;
 
     // First-time / full history: start within SYNC_LOOKBACK_BLOCKS of tip.
     // SQD Portal indexes the full range; eth_getLogs earliest-search is optional
     // (many public RPCs refuse archive getLogs). Set SYNC_LOOKBACK_BLOCKS=0 for
     // SYNC_START_BLOCK → tip. Incremental runs resume from sync_state.
-    if (lastIndexed === 0 || options?.fullHistory) {
+    if (!targetedBackfill && (lastIndexed === 0 || options?.fullHistory)) {
       const lookbackRaw = process.env.SYNC_LOOKBACK_BLOCKS;
       const lookback =
         lookbackRaw === undefined || lookbackRaw === ""
@@ -287,8 +298,18 @@ export async function runSync(options?: {
       }
     }
 
+    if (targetedBackfill) {
+      startBlock = Math.max(SYNC_START_BLOCK, Math.floor(options!.startBlock!));
+      if (options?.endBlock != null && Number.isFinite(options.endBlock)) {
+        endBlock = Math.min(latestBlock, Math.floor(options.endBlock));
+      }
+      console.log(
+        `[sync] Targeted backfill ${startBlock}→${endBlock} (stored last_indexed=${storedLastIndexed})`,
+      );
+    }
+
     console.log(
-      `[sync] Scanning USDT Transfer logs blocks ${startBlock}→${latestBlock} (SQD/RPC, resume from ${lastIndexed})`,
+      `[sync] Scanning USDT Transfer logs blocks ${startBlock}→${endBlock} (SQD/RPC, resume from ${lastIndexed})`,
     );
 
     let inserted = 0;
@@ -299,7 +320,7 @@ export async function runSync(options?: {
 
     const scan = await scanUsdtTransfersToWallets({
       startBlock,
-      endBlock: latestBlock,
+      endBlock,
       tokenDecimals: token.decimals,
       tokenSymbol: token.symbol,
       onProgress: ({ fromBlock, toBlock, logsFound, chunkSize }) => {
@@ -324,9 +345,11 @@ export async function runSync(options?: {
         }
 
         checkpointBlock = toBlock;
+        // Never lower the stored tip during a historical backfill window.
+        const checkpoint = Math.max(toBlock, storedLastIndexed);
         await upsertSyncState({
           status: "syncing",
-          last_indexed_block: toBlock,
+          last_indexed_block: checkpoint,
           last_error: null,
         });
       },
@@ -334,14 +357,16 @@ export async function runSync(options?: {
 
     scanErrors.push(...scan.errors);
 
-    if (options?.fullHistory) {
-      await reconcileDailyStats();
-    }
+    // Always rebuild daily_stats from all indexed txs (paginated).
+    // Prevents stale/partial day totals after chunked sync or a prior
+    // unpaginated reconcile that truncated at Supabase's 1000-row cap.
+    await reconcileDailyStats();
 
     const indexedBlock = Math.max(
       checkpointBlock,
       scan.lastScannedBlock,
-      latestBlock,
+      storedLastIndexed,
+      targetedBackfill ? storedLastIndexed : endBlock,
     );
 
     await upsertSyncState({

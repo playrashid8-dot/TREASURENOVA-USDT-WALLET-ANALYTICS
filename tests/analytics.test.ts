@@ -14,6 +14,7 @@ import {
   buildLastCompletedDaysSummary,
 } from "@/lib/analytics/calculations";
 import { meetsMinDisplayUsdtAmount } from "@/lib/analytics/filters";
+import { aggregateDailyFromTransactions } from "@/lib/analytics/aggregation";
 import { MIN_DISPLAY_USDT_AMOUNT } from "@/lib/config";
 import {
   resolveDateRange,
@@ -249,6 +250,99 @@ describe("last 4 completed UTC days", () => {
 
   it("formats short UTC dates like 25 Sep", () => {
     expect(formatShortUtcDate("2026-09-25")).toBe("25 Sep");
+  });
+});
+
+describe("daily analytics aggregation (IN only, no 50 USDT filter)", () => {
+  const deposit = DEPOSIT.toLowerCase();
+  const withdraw = WITHDRAW.toLowerCase();
+
+  it("counts every qualifying IN including amounts below 50 USDT", () => {
+    const byDate = aggregateDailyFromTransactions(
+      [
+        {
+          timestamp: "2026-09-25T10:00:00.000Z",
+          wallet_type: "deposit",
+          amount_usdt: 30,
+          status: "success",
+          to_address: deposit,
+        },
+        {
+          timestamp: "2026-09-25T11:00:00.000Z",
+          wallet_type: "deposit",
+          amount_usdt: 750.16,
+          status: "success",
+          to_address: deposit,
+        },
+        {
+          timestamp: "2026-09-25T12:00:00.000Z",
+          wallet_type: "withdraw",
+          amount_usdt: 100,
+          status: "success",
+          to_address: withdraw,
+        },
+      ],
+      { depositAddress: DEPOSIT, withdrawAddress: WITHDRAW },
+    );
+
+    const day = byDate.get("2026-09-25");
+    expect(day).toMatchObject({
+      deposit_amount: 780.16,
+      deposit_count: 2,
+      withdrawal_amount: 100,
+      withdrawal_count: 1,
+    });
+  });
+
+  it("excludes Deposit Wallet OUT and Withdraw Wallet OUT", () => {
+    const byDate = aggregateDailyFromTransactions(
+      [
+        {
+          timestamp: "2026-09-25T10:00:00.000Z",
+          wallet_type: "deposit",
+          amount_usdt: 500,
+          status: "success",
+          to_address: "0x1111111111111111111111111111111111111111",
+        },
+        {
+          timestamp: "2026-09-25T11:00:00.000Z",
+          wallet_type: "withdraw",
+          amount_usdt: 900,
+          status: "success",
+          to_address: "0x2222222222222222222222222222222222222222",
+        },
+        {
+          timestamp: "2026-09-25T12:00:00.000Z",
+          wallet_type: "deposit",
+          amount_usdt: 50,
+          status: "success",
+          to_address: deposit,
+        },
+      ],
+      { depositAddress: DEPOSIT, withdrawAddress: WITHDRAW },
+    );
+
+    const day = byDate.get("2026-09-25");
+    expect(day).toMatchObject({
+      deposit_amount: 50,
+      deposit_count: 1,
+      withdrawal_amount: 0,
+      withdrawal_count: 0,
+    });
+  });
+
+  it("writes a zero row when an explicit date has no qualifying txs", () => {
+    const byDate = aggregateDailyFromTransactions([], {
+      date: "2026-09-22",
+      depositAddress: DEPOSIT,
+      withdrawAddress: WITHDRAW,
+    });
+    expect(byDate.get("2026-09-22")).toMatchObject({
+      deposit_amount: 0,
+      withdrawal_amount: 0,
+      deposit_count: 0,
+      withdrawal_count: 0,
+    });
   });
 });
 
