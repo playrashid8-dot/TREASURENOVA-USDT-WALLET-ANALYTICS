@@ -137,6 +137,17 @@ export default function HomePage() {
   }, [loadCore, loadTransactions]);
 
   useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void loadCore();
+        void loadTransactions();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [loadCore, loadTransactions]);
+
+  useEffect(() => {
     const client = getSupabaseBrowser();
     if (!client) return;
 

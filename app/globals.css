@@ -20,6 +20,10 @@
   --tn-withdraw-dim: #e84a6f;
   --tn-withdraw-bg: rgba(255, 107, 138, 0.1);
   --tn-withdraw-border: rgba(255, 107, 138, 0.45);
+  --tn-reserve: #f0c14b;
+  --tn-reserve-dim: #d4a017;
+  --tn-reserve-bg: rgba(240, 193, 75, 0.1);
+  --tn-reserve-border: rgba(240, 193, 75, 0.45);
   --tn-info: #3b9eff;
   --tn-info-bg: rgba(59, 158, 255, 0.12);
   --tn-live: #22c55e;
@@ -111,6 +115,13 @@ select {
   box-shadow:
     0 0 0 1px rgba(255, 107, 138, 0.18),
     0 0 28px rgba(255, 107, 138, 0.12);
+}
+
+.tn-card-reserve {
+  border-color: var(--tn-reserve-border);
+  box-shadow:
+    0 0 0 1px rgba(240, 193, 75, 0.18),
+    0 0 28px rgba(240, 193, 75, 0.12);
 }
 
 .tn-skeleton {

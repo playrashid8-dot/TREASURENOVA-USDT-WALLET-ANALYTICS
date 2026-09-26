@@ -86,9 +86,12 @@ export interface TransactionRow {
   tokenDecimals: number;
 }
 
+/** Display wallets: deposit/withdraw (indexed) plus read-only reserve fund. */
+export type WalletCardType = WalletType | "reserve";
+
 export interface WalletCardData {
   address: string;
-  walletType: WalletType;
+  walletType: WalletCardType;
   label: string;
   balance: number | null;
   totalIncoming: number;

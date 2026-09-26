@@ -1,6 +1,7 @@
 import {
   DEPOSIT_WALLET,
   WITHDRAW_WALLET,
+  RESERVE_FUND_WALLET,
   getPrimaryConfigError,
   explorerAddressUrl,
 } from "@/lib/config";
@@ -22,7 +23,7 @@ export async function GET(request: Request) {
 
   const configError = getPrimaryConfigError();
 
-  const base: WalletCardData[] = [
+  const monitored: WalletCardData[] = [
     {
       address: DEPOSIT_WALLET,
       walletType: "deposit",
@@ -41,11 +42,23 @@ export async function GET(request: Request) {
     },
   ];
 
+  const reserve: WalletCardData = {
+    address: RESERVE_FUND_WALLET,
+    walletType: "reserve",
+    label: "TreasureNOVA Reserve Fund",
+    balance: null,
+    totalIncoming: 0,
+    transactionCount: 0,
+  };
+
+  const base: WalletCardData[] = [...monitored, reserve];
+
   if (!configError) {
     try {
       const balances = await getWalletBalances([
         DEPOSIT_WALLET,
         WITHDRAW_WALLET,
+        RESERVE_FUND_WALLET,
       ]);
       for (const w of base) {
         const bal = balances.get(normalizeAddress(w.address));
@@ -65,7 +78,8 @@ export async function GET(request: Request) {
   if (isSupabaseConfigured()) {
     try {
       const supabase = getSupabaseAdmin();
-      for (const w of base) {
+      // Stats only for monitored deposit/withdraw — reserve is balanceOf display only
+      for (const w of monitored) {
         // totalIncoming = Transfer INs only (to == wallet); OUT rows ignored
         const { data, error } = await supabase
           .from("transactions")
