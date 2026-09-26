@@ -6,7 +6,7 @@ import {
   getPrimaryConfigError,
 } from "@/lib/config";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
-import { normalizeAddress } from "@/lib/utils/addresses";
+import { addressesEqual, normalizeAddress } from "@/lib/utils/addresses";
 import { dateKeyUtc } from "@/lib/utils/dates";
 import { getEtherscanLatestBlock } from "./etherscan";
 import {
@@ -24,11 +24,45 @@ export interface SyncResult {
   inserted: number;
   duplicatesSkipped: number;
   processed: number;
+  /** Withdraw Wallet OUT rows seen in this run (history indexing). */
+  withdrawOutFound: number;
+  /** Newly inserted Withdraw Wallet OUT rows (not already in DB). */
+  withdrawOutInserted: number;
+  /** Withdraw Wallet OUT rows skipped as duplicates. */
+  withdrawOutDuplicatesSkipped: number;
+  scanStartBlock: number | null;
+  scanEndBlock: number | null;
   lastIndexedBlock: number | null;
   latestBlock: number | null;
   error?: string;
   configError?: string;
   errors: string[];
+}
+
+function emptySyncResult(
+  patch: Partial<SyncResult> & { ok: boolean; error?: string; errors: string[] },
+): SyncResult {
+  return {
+    inserted: 0,
+    duplicatesSkipped: 0,
+    processed: 0,
+    withdrawOutFound: 0,
+    withdrawOutInserted: 0,
+    withdrawOutDuplicatesSkipped: 0,
+    scanStartBlock: null,
+    scanEndBlock: null,
+    lastIndexedBlock: null,
+    latestBlock: null,
+    ...patch,
+  };
+}
+
+function isWithdrawOutTransfer(t: ValidatedTransfer): boolean {
+  return (
+    t.walletType === "withdraw" &&
+    addressesEqual(t.fromAddress, WITHDRAW_WALLET) &&
+    !addressesEqual(t.toAddress, WITHDRAW_WALLET)
+  );
 }
 
 async function getSyncState() {
@@ -196,31 +230,21 @@ export async function runSync(options?: {
   const configError = getPrimaryConfigError();
   if (configError) {
     console.error("[sync] Configuration error:", configError);
-    return {
+    return emptySyncResult({
       ok: false,
-      inserted: 0,
-      duplicatesSkipped: 0,
-      processed: 0,
-      lastIndexedBlock: null,
-      latestBlock: null,
       configError,
       error: configError,
       errors: [configError],
-    };
+    });
   }
 
   if (!isSupabaseConfigured()) {
     const error = "Supabase is not configured.";
-    return {
+    return emptySyncResult({
       ok: false,
-      inserted: 0,
-      duplicatesSkipped: 0,
-      processed: 0,
-      lastIndexedBlock: null,
-      latestBlock: null,
       error,
       errors: [error],
-    };
+    });
   }
 
   try {
@@ -315,6 +339,9 @@ export async function runSync(options?: {
     let inserted = 0;
     let duplicatesSkipped = 0;
     let processed = 0;
+    let withdrawOutFound = 0;
+    let withdrawOutInserted = 0;
+    let withdrawOutDuplicatesSkipped = 0;
     const scanErrors: string[] = [...emptyErrors];
     let checkpointBlock = Math.max(0, startBlock - 1);
 
@@ -337,6 +364,35 @@ export async function runSync(options?: {
             uniqueMap.set(`${t.txHash}:${t.logIndex}:${t.walletAddress}`, t);
           }
           const unique = Array.from(uniqueMap.values());
+          const outs = unique.filter(isWithdrawOutTransfer);
+          withdrawOutFound += outs.length;
+
+          // Pre-check OUT identities so insert vs duplicate counts stay accurate.
+          if (outs.length > 0) {
+            const supabase = getSupabaseAdmin();
+            const { data: existingOuts } = await supabase
+              .from("transactions")
+              .select("tx_hash, log_index, wallet_address")
+              .in(
+                "tx_hash",
+                outs.map((t) => t.txHash),
+              );
+            const existingOutKeys = new Set(
+              (existingOuts ?? []).map(
+                (e) =>
+                  `${e.tx_hash}:${e.log_index}:${normalizeAddress(e.wallet_address)}`,
+              ),
+            );
+            for (const t of outs) {
+              const key = `${t.txHash}:${t.logIndex}:${t.walletAddress}`;
+              if (existingOutKeys.has(key)) {
+                withdrawOutDuplicatesSkipped += 1;
+              } else {
+                withdrawOutInserted += 1;
+              }
+            }
+          }
+
           const result = await upsertTransfers(unique);
           inserted += result.inserted;
           duplicatesSkipped += result.duplicatesSkipped;
@@ -377,7 +433,7 @@ export async function runSync(options?: {
     });
 
     console.log(
-      `[sync] Sync completed: processed=${processed} inserted=${inserted} duplicatesSkipped=${duplicatesSkipped} lastIndexedBlock=${indexedBlock} latestBlock=${latestBlock} errors=${scanErrors.length}`,
+      `[sync] Sync completed: processed=${processed} inserted=${inserted} duplicatesSkipped=${duplicatesSkipped} withdrawOutFound=${withdrawOutFound} withdrawOutInserted=${withdrawOutInserted} lastIndexedBlock=${indexedBlock} latestBlock=${latestBlock} errors=${scanErrors.length}`,
     );
 
     return {
@@ -385,6 +441,11 @@ export async function runSync(options?: {
       inserted,
       duplicatesSkipped,
       processed,
+      withdrawOutFound,
+      withdrawOutInserted,
+      withdrawOutDuplicatesSkipped,
+      scanStartBlock: startBlock,
+      scanEndBlock: endBlock,
       lastIndexedBlock: indexedBlock,
       latestBlock,
       errors: scanErrors,
@@ -397,15 +458,10 @@ export async function runSync(options?: {
     } catch {
       /* ignore */
     }
-    return {
+    return emptySyncResult({
       ok: false,
-      inserted: 0,
-      duplicatesSkipped: 0,
-      processed: 0,
-      lastIndexedBlock: null,
-      latestBlock: null,
       error: message,
       errors: [message],
-    };
+    });
   }
 }

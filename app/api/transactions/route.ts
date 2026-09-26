@@ -69,13 +69,16 @@ export async function GET(request: Request) {
     query = applyTransactionHistoryTypeFilter(query, type);
 
     // Address search: Deposit History → sender (from); Withdrawal History → receiver (to)
+    // Applied after type + amount filters, before pagination.
     if (search) {
       const s = search.toLowerCase();
       const field = type === "deposit" ? "from_address" : "to_address";
       if (s.startsWith("0x") && s.length === 42) {
         query = query.eq(field, normalizeAddress(s));
       } else {
-        query = query.ilike(field, `%${search}%`);
+        // Case-insensitive partial match on the search field only
+        // (never searches the opposite side of the transfer).
+        query = query.ilike(field, `%${s}%`);
       }
     }
 
