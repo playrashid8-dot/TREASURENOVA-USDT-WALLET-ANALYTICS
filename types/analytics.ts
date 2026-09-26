@@ -14,13 +14,39 @@ export interface DateRange {
   preset: DateRangePreset;
 }
 
+/** Aggregated deposit/withdrawal flow for a period or day. */
+export interface DayFlowSummary {
+  depositAmount: number;
+  withdrawalAmount: number;
+  netCashFlow: number;
+  depositCount: number;
+  withdrawalCount: number;
+}
+
 export interface KpiSummary {
+  /** Range totals including today's live day when it falls in range. */
   totalDeposits: number;
   totalWithdrawals: number;
   netCashFlow: number;
+  depositCount: number;
+  withdrawalCount: number;
+  transactionCount: number;
+  /** Finalized UTC days only — excludes today's running totals. */
+  completedDeposits: number;
+  completedWithdrawals: number;
+  completedNetCashFlow: number;
+  completedDepositCount: number;
+  completedWithdrawalCount: number;
+  /** Today's UTC calendar day — live/running until the day ends. */
+  liveDeposits: number;
+  liveWithdrawals: number;
+  liveNetCashFlow: number;
+  liveDepositCount: number;
+  liveWithdrawalCount: number;
+  liveInRange: boolean;
+  todayDate: string;
   depositBalance: number | null;
   withdrawBalance: number | null;
-  transactionCount: number;
   lastUpdated: string | null;
   syncStatus: string;
   dateRange: DateRange;
@@ -35,6 +61,10 @@ export interface DailyStatRow {
   netCashFlow: number;
   depositCount: number;
   withdrawalCount: number;
+  /** True when date is the current UTC calendar day (still running). */
+  isLive: boolean;
+  /** True when the full UTC calendar day has ended (final record). */
+  isCompleted: boolean;
 }
 
 export interface TransactionRow {

@@ -8,6 +8,7 @@ import {
 } from "@/lib/api/response";
 import type { DailyStatRow } from "@/types/analytics";
 import { getPrimaryConfigError } from "@/lib/config";
+import { isCompletedUtcDate, isLiveUtcDate } from "@/lib/utils/dates";
 
 export const dynamic = "force-dynamic";
 
@@ -47,14 +48,19 @@ export async function GET(request: Request) {
       return jsonError("Historical indexer is syncing or unavailable.", 503);
     }
 
-    const rows: DailyStatRow[] = (data ?? []).map((r) => ({
-      date: r.date,
-      depositAmount: Number(r.deposit_amount) || 0,
-      withdrawalAmount: Number(r.withdrawal_amount) || 0,
-      netCashFlow: Number(r.net_cash_flow) || 0,
-      depositCount: Number(r.deposit_count) || 0,
-      withdrawalCount: Number(r.withdrawal_count) || 0,
-    }));
+    const rows: DailyStatRow[] = (data ?? []).map((r) => {
+      const date = String(r.date);
+      return {
+        date,
+        depositAmount: Number(r.deposit_amount) || 0,
+        withdrawalAmount: Number(r.withdrawal_amount) || 0,
+        netCashFlow: Number(r.net_cash_flow) || 0,
+        depositCount: Number(r.deposit_count) || 0,
+        withdrawalCount: Number(r.withdrawal_count) || 0,
+        isLive: isLiveUtcDate(date),
+        isCompleted: isCompletedUtcDate(date),
+      };
+    });
 
     return withRateLimitHeaders(
       jsonOk({ data: rows, dateRange: range, configError }),

@@ -14,6 +14,10 @@ import { addressesEqual, normalizeAddress } from "@/lib/utils/addresses";
 import { blockTimestampToIso } from "@/lib/utils/dates";
 import { rawToUsdt } from "@/lib/utils/format";
 
+/**
+ * Classify by recipient (Transfer `to`) only.
+ * Deposit Wallet OUT and Withdraw Wallet OUT are never deposits or withdrawals.
+ */
 export function classifyTransfer(
   toAddress: string,
 ): WalletType | null {
@@ -27,9 +31,11 @@ export function classifyTransfer(
 }
 
 /**
- * Business rule:
- * - Deposit = USDT transfer TO deposit wallet
- * - Withdrawal = USDT transfer TO withdraw wallet
+ * Business rules (IN only):
+ * - Deposit = USDT Transfer where to == Deposit Wallet
+ * - Withdrawal = USDT Transfer where to == Withdraw Wallet
+ * - Transfers where from == Deposit/Withdraw Wallet are never counted
+ *   (indexer queries topic2/`to` only; this validator also requires `to` match)
  */
 export function validateTokenTransfer(
   tx: EtherscanTokenTransfer,

@@ -32,9 +32,12 @@ export function Footer() {
 
         <p className="mt-5 max-w-3xl text-xs leading-relaxed text-[var(--tn-muted)]">
           Blockchain data is provided for analytics and informational purposes.
-          Net Cash Flow is calculated from tracked wallet inflows and outflows
-          and does not represent accounting profit. This dashboard is read-only
-          and never requests private keys, seed phrases, or wallet connections.
+          Deposits are USDT transfers IN to the Deposit Wallet; Withdrawals are
+          USDT transfers IN to the Withdraw Wallet. Wallet OUT transfers are never
+          counted. Net Cash Flow = Deposit − Withdrawal and does not represent
+          accounting profit. Completed UTC days are final; today remains LIVE until
+          the day ends. This dashboard is read-only and never requests private
+          keys, seed phrases, or wallet connections.
         </p>
       </div>
     </footer>

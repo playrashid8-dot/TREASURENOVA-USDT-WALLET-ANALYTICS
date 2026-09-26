@@ -237,7 +237,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Disclaimer
 
-Blockchain data is for analytics and informational purposes. **Net Cash Flow** is calculated from tracked wallet inflows and outflows and **does not represent accounting profit**.
+Blockchain data is for analytics and informational purposes. **Deposits** are USDT transfers IN to the Deposit Wallet; **Withdrawals** are USDT transfers IN to the Withdraw Wallet. Wallet OUT transfers are never counted. **Net Cash Flow** = Deposit − Withdrawal and **does not represent accounting profit**. Completed UTC days are final; today remains LIVE until the day ends.
 
 ## License
 

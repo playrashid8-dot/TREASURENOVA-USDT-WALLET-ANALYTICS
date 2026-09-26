@@ -7,30 +7,56 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { dateRangeFromSearchParams } from "@/lib/analytics/filters";
-import { computeNetCashFlow } from "@/lib/analytics/calculations";
+import {
+  computeNetCashFlow,
+  emptyDayFlow,
+  splitCompletedAndLive,
+} from "@/lib/analytics/calculations";
 import { DEPOSIT_WALLET, WITHDRAW_WALLET } from "@/lib/config";
 import { normalizeAddress } from "@/lib/utils/addresses";
+import { utcTodayKey } from "@/lib/utils/dates";
 import type { KpiSummary } from "@/types/analytics";
 
-export async function buildDashboardPayload(
-  searchParams: URLSearchParams,
-): Promise<KpiSummary> {
-  const configError = getPrimaryConfigError();
-  const range = dateRangeFromSearchParams(searchParams);
-
-  const empty: KpiSummary = {
+function emptyKpi(
+  range: KpiSummary["dateRange"],
+  configError: string | null,
+): KpiSummary {
+  const empty = emptyDayFlow();
+  return {
     totalDeposits: 0,
     totalWithdrawals: 0,
     netCashFlow: 0,
+    depositCount: 0,
+    withdrawalCount: 0,
+    transactionCount: 0,
+    completedDeposits: empty.depositAmount,
+    completedWithdrawals: empty.withdrawalAmount,
+    completedNetCashFlow: empty.netCashFlow,
+    completedDepositCount: empty.depositCount,
+    completedWithdrawalCount: empty.withdrawalCount,
+    liveDeposits: empty.depositAmount,
+    liveWithdrawals: empty.withdrawalAmount,
+    liveNetCashFlow: empty.netCashFlow,
+    liveDepositCount: empty.depositCount,
+    liveWithdrawalCount: empty.withdrawalCount,
+    liveInRange: false,
+    todayDate: utcTodayKey(),
     depositBalance: null,
     withdrawBalance: null,
-    transactionCount: 0,
     lastUpdated: null,
     syncStatus: "unconfigured",
     dateRange: range,
     balanceError: null,
     configError,
   };
+}
+
+export async function buildDashboardPayload(
+  searchParams: URLSearchParams,
+): Promise<KpiSummary> {
+  const configError = getPrimaryConfigError();
+  const range = dateRangeFromSearchParams(searchParams);
+  const empty = emptyKpi(range, configError);
 
   if (!isSupabaseConfigured()) {
     return {
@@ -62,17 +88,28 @@ export async function buildDashboardPayload(
       throw new Error(statsError.message);
     }
 
+    const rows = (stats ?? []).map((row) => ({
+      date: String(row.date),
+      depositAmount: Number(row.deposit_amount) || 0,
+      withdrawalAmount: Number(row.withdrawal_amount) || 0,
+      depositCount: Number(row.deposit_count) || 0,
+      withdrawalCount: Number(row.withdrawal_count) || 0,
+    }));
+
     let totalDeposits = 0;
     let totalWithdrawals = 0;
     let depositCount = 0;
     let withdrawalCount = 0;
 
-    for (const row of stats ?? []) {
-      totalDeposits += Number(row.deposit_amount) || 0;
-      totalWithdrawals += Number(row.withdrawal_amount) || 0;
-      depositCount += Number(row.deposit_count) || 0;
-      withdrawalCount += Number(row.withdrawal_count) || 0;
+    for (const row of rows) {
+      totalDeposits += row.depositAmount;
+      totalWithdrawals += row.withdrawalAmount;
+      depositCount += row.depositCount;
+      withdrawalCount += row.withdrawalCount;
     }
+
+    const { completed, live, liveInRange, todayDate } =
+      splitCompletedAndLive(rows);
 
     const { data: sync } = await supabase
       .from("sync_state")
@@ -106,9 +143,23 @@ export async function buildDashboardPayload(
       totalDeposits,
       totalWithdrawals,
       netCashFlow: computeNetCashFlow(totalDeposits, totalWithdrawals),
+      depositCount,
+      withdrawalCount,
+      transactionCount: depositCount + withdrawalCount,
+      completedDeposits: completed.depositAmount,
+      completedWithdrawals: completed.withdrawalAmount,
+      completedNetCashFlow: completed.netCashFlow,
+      completedDepositCount: completed.depositCount,
+      completedWithdrawalCount: completed.withdrawalCount,
+      liveDeposits: live.depositAmount,
+      liveWithdrawals: live.withdrawalAmount,
+      liveNetCashFlow: live.netCashFlow,
+      liveDepositCount: live.depositCount,
+      liveWithdrawalCount: live.withdrawalCount,
+      liveInRange,
+      todayDate,
       depositBalance,
       withdrawBalance,
-      transactionCount: depositCount + withdrawalCount,
       lastUpdated: sync?.last_successful_sync ?? null,
       syncStatus: sync?.status ?? "idle",
       dateRange: range,

@@ -39,7 +39,8 @@ export function FlowChart({ data, loading }: FlowChartProps) {
     <article className="tn-card p-4 sm:p-5">
       <h2 className="text-lg font-bold text-[var(--tn-navy)]">Daily USDT Flow</h2>
       <p className="mt-1 text-sm text-[var(--tn-muted)]">
-        Deposits, withdrawals, and net cash flow by UTC day
+        Deposits, withdrawals, and Net Cash Flow by UTC day · today remains LIVE
+        until the day ends
       </p>
 
       {chartData.length === 0 ? (

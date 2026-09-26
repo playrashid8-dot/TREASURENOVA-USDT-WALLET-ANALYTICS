@@ -42,7 +42,8 @@ export function DailyStatsTable({
             Daily USDT Summary
           </h2>
           <p className="text-sm text-[var(--tn-muted)]">
-            Newest first · UTC daily grouping
+            Newest first · UTC daily grouping · completed days are final · today
+            stays LIVE until the day ends
           </p>
         </div>
         <a
@@ -62,6 +63,7 @@ export function DailyStatsTable({
               <thead className="sticky top-0 bg-slate-50 text-xs uppercase tracking-wide text-[var(--tn-muted)]">
                 <tr>
                   <th className="px-3 py-3">Date</th>
+                  <th className="px-3 py-3">Status</th>
                   <th className="px-3 py-3">Deposits</th>
                   <th className="px-3 py-3">Withdrawals</th>
                   <th className="px-3 py-3">Net Cash Flow</th>
@@ -77,6 +79,19 @@ export function DailyStatsTable({
                   >
                     <td className="px-3 py-3 font-medium">
                       {formatDisplayDate(row.date)}
+                    </td>
+                    <td className="px-3 py-3">
+                      {row.isLive ? (
+                        <span className="inline-flex rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 ring-1 ring-emerald-200">
+                          Live
+                        </span>
+                      ) : row.isCompleted ? (
+                        <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-600 ring-1 ring-slate-200">
+                          Completed
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[var(--tn-muted)]">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-3 text-[var(--tn-deposit)]">
                       {formatUsdt(row.depositAmount)} USDT

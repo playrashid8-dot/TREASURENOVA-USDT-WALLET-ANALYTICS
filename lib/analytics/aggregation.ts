@@ -2,6 +2,8 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
 
 /**
  * Rebuild daily_stats for a specific UTC date (or all dates if omitted).
+ * Counts only indexed USDT Transfer INs (to == deposit/withdraw wallet).
+ * Wallet OUT transfers are never indexed and never included here.
  * Idempotent — safe to call after upserts and for reconciliation repairs.
  */
 export async function reconcileDailyStats(date?: string): Promise<void> {
