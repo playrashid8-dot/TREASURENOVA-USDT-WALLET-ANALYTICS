@@ -95,7 +95,7 @@ export function RecentTxHistory({
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-white">Recent TX History</h2>
             <p className="mt-0.5 text-sm text-[var(--tn-muted)]">
-              Latest 10 USDT Transactions (All Wallets Combined)
+              Latest 10 USDT transfers ≥ 10,000 (all wallets)
             </p>
           </div>
         </div>
@@ -150,7 +150,7 @@ export function RecentTxHistory({
           ))}
         </div>
       ) : txs.length === 0 ? (
-        <EmptyState message="No indexed USDT transfers yet for the configured wallets." />
+        <EmptyState message="No indexed USDT transfers ≥ 10,000 for the configured wallets." />
       ) : (
         <ol className="space-y-2.5">
           {txs.map((tx, index) => (

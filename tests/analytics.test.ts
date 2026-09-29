@@ -612,7 +612,7 @@ describe("recent TX classification + latest-10 combined", () => {
             : EXTERNAL,
       blockNumber: 1000 + i,
       timestamp: `2026-09-${String(10 + (i % 18)).padStart(2, "0")}T12:00:00.000Z`,
-      amountUsdt: 100 + i,
+      amountUsdt: 10_000 + i,
     }));
     // Fix withdraw OUT rows: from withdraw, to external
     for (let i = 0; i < rows.length; i++) {
@@ -641,6 +641,43 @@ describe("recent TX classification + latest-10 combined", () => {
     expect(reserves).toBeLessThanOrEqual(10);
   });
 
+  it("excludes transfers below the 10,000 USDT display floor", () => {
+    const rows = [
+      {
+        txHash: "0x" + "01".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 200,
+        timestamp: "2026-09-21T12:00:00.000Z",
+        amountUsdt: 9_999.99,
+      },
+      {
+        txHash: "0x" + "02".repeat(32),
+        logIndex: 0,
+        fromAddress: WITHDRAW.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 199,
+        timestamp: "2026-09-21T11:00:00.000Z",
+        amountUsdt: 10_000,
+      },
+      {
+        txHash: "0x" + "03".repeat(32),
+        logIndex: 0,
+        fromAddress: RESERVE.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 198,
+        timestamp: "2026-09-21T10:00:00.000Z",
+        amountUsdt: 50_000,
+      },
+    ];
+    const selected = selectLatestCombinedTransactions(rows, RECENT_TX_LIMIT);
+    expect(selected).toHaveLength(2);
+    expect(selected.every((t) => t.amountUsdt >= LARGE_TX_MIN_USDT)).toBe(true);
+    expect(selected[0].amountUsdt).toBe(10_000);
+    expect(selected[1].amountUsdt).toBe(50_000);
+  });
+
   it("dedupes identical txHash:logIndex across dual-role rows", () => {
     const shared = {
       txHash: "0x" + "ab".repeat(32),
@@ -649,6 +686,7 @@ describe("recent TX classification + latest-10 combined", () => {
       toAddress: DEPOSIT.toLowerCase(),
       blockNumber: 50,
       timestamp: "2026-09-20T10:00:00.000Z",
+      amountUsdt: 25_000,
     };
     const selected = selectLatestCombinedTransactions([shared, { ...shared }], 10);
     expect(selected).toHaveLength(1);

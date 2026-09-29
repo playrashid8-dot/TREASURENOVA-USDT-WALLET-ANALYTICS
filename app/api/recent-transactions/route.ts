@@ -8,6 +8,7 @@ import {
 } from "@/lib/config";
 import {
   RECENT_TX_LIMIT,
+  applyLargeTxMinAmountFilter,
   selectLatestCombinedTransactions,
 } from "@/lib/analytics/filters";
 import { blockLag, deriveLiveStatus } from "@/lib/analytics/live-status";
@@ -125,6 +126,9 @@ export async function GET(request: Request) {
       .order("block_number", { ascending: false })
       .order("log_index", { ascending: false })
       .limit(FETCH_BUFFER);
+
+    // Global display floor: only USDT transfers >= LARGE_TX_MIN_USDT (10,000).
+    query = applyLargeTxMinAmountFilter(query);
 
     if (token) {
       query = query.eq("token_contract", token);

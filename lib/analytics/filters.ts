@@ -46,12 +46,16 @@ export function classifyRecentTxWallet(
 export function qualifiesForRecentTxHistory(
   fromAddress: string,
   toAddress: string,
+  amountUsdt?: number,
 ): boolean {
-  return classifyRecentTxWallet(fromAddress, toAddress) != null;
+  if (classifyRecentTxWallet(fromAddress, toAddress) == null) return false;
+  if (amountUsdt === undefined) return true;
+  return meetsLargeTxMinUsdt(amountUsdt);
 }
 
 /**
  * Merge candidate rows into a single newest-first list (global LIMIT).
+ * Display-only floor: amountUsdt >= LARGE_TX_MIN_USDT (default 10,000).
  * Dedupes by txHash:logIndex, classifies from addresses, caps at `limit`.
  */
 export function selectLatestCombinedTransactions<
@@ -62,6 +66,7 @@ export function selectLatestCombinedTransactions<
     toAddress: string;
     blockNumber: number;
     timestamp: string;
+    amountUsdt: number;
   },
 >(
   rows: T[],
@@ -73,6 +78,7 @@ export function selectLatestCombinedTransactions<
   for (const row of rows) {
     const key = `${row.txHash}:${row.logIndex}`;
     if (seen.has(key)) continue;
+    if (!meetsLargeTxMinUsdt(row.amountUsdt)) continue;
     const walletType = classifyRecentTxWallet(row.fromAddress, row.toAddress);
     if (!walletType) continue;
     seen.add(key);
