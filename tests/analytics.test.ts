@@ -8,14 +8,23 @@ import {
 import { rawToUsdt, formatUsdt, formatSignedUsdt } from "@/lib/utils/format";
 import {
   computeNetCashFlow,
-  paginate,
   sumDailyStats,
   splitCompletedAndLive,
-  buildLastCompletedDaysSummary,
 } from "@/lib/analytics/calculations";
-import { meetsMinDisplayUsdtAmount } from "@/lib/analytics/filters";
 import { aggregateDailyFromTransactions } from "@/lib/analytics/aggregation";
-import { MIN_DISPLAY_USDT_AMOUNT } from "@/lib/config";
+import {
+  LARGE_TX_COMPLETED_DAYS,
+  LARGE_TX_MIN_USDT,
+  MIN_DISPLAY_USDT_AMOUNT,
+} from "@/lib/config";
+import {
+  meetsLargeTxMinUsdt,
+  applyLargeTxWalletFilter,
+  classifyRecentTxWallet,
+  selectLatestCombinedTransactions,
+  RECENT_TX_LIMIT,
+} from "@/lib/analytics/filters";
+import { deriveLiveStatus } from "@/lib/analytics/live-status";
 import {
   resolveDateRange,
   dateKeyUtc,
@@ -25,10 +34,15 @@ import {
   isLiveUtcDate,
   addUtcDays,
   lastCompletedUtcDateKeys,
-  formatShortUtcDate,
+  lastCompletedUtcRange,
+  formatDisplayDateTime,
 } from "@/lib/utils/dates";
-import { classifyTransfer, classifyIndexedTransferRoles, validateTokenTransfer, validateTokenTransfers } from "@/lib/blockchain/validation";
-import { applyTransactionHistoryTypeFilter } from "@/lib/analytics/filters";
+import {
+  classifyTransfer,
+  classifyIndexedTransferRoles,
+  validateTokenTransfer,
+  validateTokenTransfers,
+} from "@/lib/blockchain/validation";
 import { resolveScanStartBlock } from "@/lib/blockchain/logs";
 import type { EtherscanTokenTransfer } from "@/types/blockchain";
 
@@ -81,24 +95,16 @@ describe("net cash flow", () => {
   it("sums daily stats", () => {
     const result = sumDailyStats([
       {
-        date: "2026-01-01",
         depositAmount: 100,
         withdrawalAmount: 40,
-        netCashFlow: 60,
         depositCount: 2,
         withdrawalCount: 1,
-        isLive: false,
-        isCompleted: true,
       },
       {
-        date: "2026-01-02",
         depositAmount: 50,
         withdrawalAmount: 10,
-        netCashFlow: 40,
         depositCount: 1,
         withdrawalCount: 1,
-        isLive: false,
-        isCompleted: true,
       },
     ]);
     expect(result.totalDeposits).toBe(150);
@@ -180,80 +186,7 @@ describe("completed vs live daily totals", () => {
   });
 });
 
-describe("last 4 completed UTC days", () => {
-  const now = new Date("2026-09-26T15:30:00.000Z");
-
-  it("returns yesterday through yesterday-3 newest first", () => {
-    expect(lastCompletedUtcDateKeys(4, now)).toEqual([
-      "2026-09-25",
-      "2026-09-24",
-      "2026-09-23",
-      "2026-09-22",
-    ]);
-  });
-
-  it("never includes today's live date", () => {
-    const keys = lastCompletedUtcDateKeys(4, now);
-    expect(keys).not.toContain("2026-09-26");
-    expect(keys.every((k) => isCompletedUtcDate(k, now))).toBe(true);
-  });
-
-  it("fills missing indexed days with zeros", () => {
-    const rows = buildLastCompletedDaysSummary(
-      [
-        {
-          date: "2026-09-25",
-          depositAmount: 1000,
-          withdrawalAmount: 400,
-          netCashFlow: 600,
-          depositCount: 3,
-          withdrawalCount: 2,
-        },
-        {
-          date: "2026-09-26",
-          depositAmount: 50,
-          withdrawalAmount: 10,
-          netCashFlow: 40,
-          depositCount: 1,
-          withdrawalCount: 1,
-        },
-      ],
-      4,
-      now,
-    );
-
-    expect(rows).toHaveLength(4);
-    expect(rows.map((r) => r.date)).toEqual([
-      "2026-09-25",
-      "2026-09-24",
-      "2026-09-23",
-      "2026-09-22",
-    ]);
-    expect(rows[0]).toMatchObject({
-      depositAmount: 1000,
-      withdrawalAmount: 400,
-      netCashFlow: 600,
-      depositCount: 3,
-      withdrawalCount: 2,
-      isCompleted: true,
-      isLive: false,
-    });
-    expect(rows[1]).toMatchObject({
-      depositAmount: 0,
-      withdrawalAmount: 0,
-      netCashFlow: 0,
-      depositCount: 0,
-      withdrawalCount: 0,
-    });
-    expect(rows.every((r) => !r.isLive && r.isCompleted)).toBe(true);
-  });
-
-  it("formats short UTC dates like 25 Sep", () => {
-    expect(formatShortUtcDate("2026-09-25")).toBe("25 Sep");
-  });
-});
-
-describe("daily analytics aggregation (IN only, no 50 USDT filter)", () => {
+describe("daily analytics aggregation (IN only, no min display filter)", () => {
   const deposit = DEPOSIT.toLowerCase();
   const withdraw = WITHDRAW.toLowerCase();
 
@@ -346,40 +279,98 @@ describe("daily analytics aggregation (IN only, no 50 USDT filter)", () => {
   });
 });
 
-describe("pagination", () => {
-  it("paginates arrays", () => {
-    const items = [1, 2, 3, 4, 5];
-    const page1 = paginate(items, 1, 2);
-    expect(page1.data).toEqual([1, 2]);
-    expect(page1.totalPages).toBe(3);
-    const page3 = paginate(items, 3, 2);
-    expect(page3.data).toEqual([5]);
-  });
-
-  it("paginates only after the min display amount filter", () => {
-    const amounts = [0, 1, 10, 49.99, 50, 50.01, 100, 200];
-    const visible = amounts.filter((a) => meetsMinDisplayUsdtAmount(a));
-    expect(visible).toEqual([50, 50.01, 100, 200]);
-    const page1 = paginate(visible, 1, 2);
-    expect(page1.data).toEqual([50, 50.01]);
-    expect(page1.total).toBe(4);
-    expect(page1.totalPages).toBe(2);
-  });
-});
-
-describe("min display USDT filter", () => {
-  it("defaults to 50 USDT", () => {
+describe("min display USDT constant", () => {
+  it("defaults to 50 USDT for optional list tooling", () => {
     expect(MIN_DISPLAY_USDT_AMOUNT).toBe(50);
   });
 
-  it("hides amounts below 50 and shows 50 and above", () => {
-    expect(meetsMinDisplayUsdtAmount(0)).toBe(false);
-    expect(meetsMinDisplayUsdtAmount(1)).toBe(false);
-    expect(meetsMinDisplayUsdtAmount(10)).toBe(false);
-    expect(meetsMinDisplayUsdtAmount(49.99)).toBe(false);
-    expect(meetsMinDisplayUsdtAmount(50)).toBe(true);
-    expect(meetsMinDisplayUsdtAmount(50.0)).toBe(true);
-    expect(meetsMinDisplayUsdtAmount(50.01)).toBe(true);
+  it("defaults large-tx floor to 10,000 USDT over 5 completed days", () => {
+    expect(LARGE_TX_MIN_USDT).toBe(10_000);
+    expect(LARGE_TX_COMPLETED_DAYS).toBe(5);
+    expect(meetsLargeTxMinUsdt(9_999.99)).toBe(false);
+    expect(meetsLargeTxMinUsdt(10_000)).toBe(true);
+  });
+});
+
+describe("large-tx wallet direction filters", () => {
+  it("filters deposit as IN to deposit wallet", () => {
+    const calls: Array<[string, string]> = [];
+    const q = {
+      eq(col: string, val: string) {
+        calls.push([col, val]);
+        return this;
+      },
+      neq() {
+        return this;
+      },
+    };
+    applyLargeTxWalletFilter(q, "deposit");
+    expect(calls).toEqual([["to_address", normalizeAddress(DEPOSIT)]]);
+  });
+
+  it("filters withdraw as OUT from withdraw wallet", () => {
+    const eqs: Array<[string, string]> = [];
+    const neqs: Array<[string, string]> = [];
+    const q = {
+      eq(col: string, val: string) {
+        eqs.push([col, val]);
+        return this;
+      },
+      neq(col: string, val: string) {
+        neqs.push([col, val]);
+        return this;
+      },
+    };
+    applyLargeTxWalletFilter(q, "withdraw");
+    expect(eqs).toEqual([["from_address", normalizeAddress(WITHDRAW)]]);
+    expect(neqs).toEqual([["to_address", normalizeAddress(WITHDRAW)]]);
+  });
+
+  it("filters reserve as OUT from reserve fund wallet", () => {
+    const reserve = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
+    const eqs: Array<[string, string]> = [];
+    const neqs: Array<[string, string]> = [];
+    const q = {
+      eq(col: string, val: string) {
+        eqs.push([col, val]);
+        return this;
+      },
+      neq(col: string, val: string) {
+        neqs.push([col, val]);
+        return this;
+      },
+    };
+    applyLargeTxWalletFilter(q, "reserve");
+    expect(eqs).toEqual([["from_address", normalizeAddress(reserve)]]);
+    expect(neqs).toEqual([["to_address", normalizeAddress(reserve)]]);
+  });
+});
+
+describe("last completed UTC days for large txs", () => {
+  const now = new Date("2026-09-29T10:00:00.000Z");
+
+  it("returns latest N completed days excluding today", () => {
+    const keys = lastCompletedUtcDateKeys(5, now);
+    expect(keys).toEqual([
+      "2026-09-28",
+      "2026-09-27",
+      "2026-09-26",
+      "2026-09-25",
+      "2026-09-24",
+    ]);
+    expect(keys.includes("2026-09-29")).toBe(false);
+  });
+
+  it("builds inclusive UTC timestamp bounds for those days", () => {
+    const range = lastCompletedUtcRange(5, now);
+    expect(range.from).toBe("2026-09-24T00:00:00.000Z");
+    expect(range.to).toBe("2026-09-28T23:59:59.999Z");
+  });
+
+  it("formats display datetime as date • time UTC", () => {
+    expect(formatDisplayDateTime("2026-09-27T14:23:11.000Z")).toBe(
+      "Sep 27, 2026 • 14:23:11 UTC",
+    );
   });
 });
 
@@ -445,7 +436,7 @@ describe("deposit / withdrawal detection (IN only for analytics)", () => {
   });
 });
 
-describe("transaction history indexing roles", () => {
+describe("transfer indexing roles", () => {
   it("indexes Deposit Wallet IN as deposit", () => {
     const roles = classifyIndexedTransferRoles(
       "0x1111111111111111111111111111111111111111",
@@ -466,7 +457,7 @@ describe("transaction history indexing roles", () => {
     ]);
   });
 
-  it("indexes Withdraw Wallet OUT as withdraw (history only)", () => {
+  it("indexes Withdraw Wallet OUT as withdraw", () => {
     const roles = classifyIndexedTransferRoles(
       WITHDRAW,
       "0x2222222222222222222222222222222222222222",
@@ -489,27 +480,6 @@ describe("transaction history indexing roles", () => {
     expect(roles).toEqual([
       { walletType: "deposit", walletAddress: DEPOSIT.toLowerCase() },
       { walletType: "withdraw", walletAddress: WITHDRAW.toLowerCase() },
-    ]);
-  });
-});
-
-describe("transaction history type filters", () => {
-  it("filters deposits by to_address and withdrawals by from_address", () => {
-    const calls: Array<{ col: string; val: string }> = [];
-    const query = {
-      eq(col: string, val: string) {
-        calls.push({ col, val });
-        return this;
-      },
-    };
-    applyTransactionHistoryTypeFilter(query, "deposit");
-    expect(calls).toEqual([
-      { col: "to_address", val: DEPOSIT.toLowerCase() },
-    ]);
-    calls.length = 0;
-    applyTransactionHistoryTypeFilter(query, "withdraw");
-    expect(calls).toEqual([
-      { col: "from_address", val: WITHDRAW.toLowerCase() },
     ]);
   });
 });
@@ -585,7 +555,7 @@ describe("transfer validation", () => {
     expect(result).toBeNull();
   });
 
-  it("indexes Withdraw Wallet OUT for transaction history", () => {
+  it("indexes Withdraw Wallet OUT", () => {
     const results = validateTokenTransfers(
       {
         ...baseTx,
@@ -610,5 +580,114 @@ describe("log scan resume bounds", () => {
   it("uses SYNC_START_BLOCK floor when nothing is indexed yet", () => {
     const start = resolveScanStartBlock(0);
     expect(start).toBeGreaterThan(0);
+  });
+});
+
+describe("recent TX classification + latest-10 combined", () => {
+  const RESERVE = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
+  const EXTERNAL = "0x2222222222222222222222222222222222222222";
+
+  it("classifies Deposit IN, Withdraw OUT, Reserve OUT", () => {
+    expect(classifyRecentTxWallet(EXTERNAL, DEPOSIT)).toBe("deposit");
+    expect(classifyRecentTxWallet(WITHDRAW, EXTERNAL)).toBe("withdraw");
+    expect(classifyRecentTxWallet(RESERVE, EXTERNAL)).toBe("reserve");
+    expect(classifyRecentTxWallet(EXTERNAL, WITHDRAW)).toBeNull();
+    expect(classifyRecentTxWallet(DEPOSIT, EXTERNAL)).toBeNull();
+  });
+
+  it("prefers Deposit when Withdraw → Deposit matches both rules", () => {
+    expect(classifyRecentTxWallet(WITHDRAW, DEPOSIT)).toBe("deposit");
+  });
+
+  it("returns a global newest-first list capped at 10 (not per wallet)", () => {
+    const rows = Array.from({ length: 15 }, (_, i) => ({
+      txHash: `0x${(i + 1).toString(16).padStart(64, "0")}`,
+      logIndex: 0,
+      fromAddress: i % 3 === 1 ? WITHDRAW.toLowerCase() : EXTERNAL,
+      toAddress:
+        i % 3 === 0
+          ? DEPOSIT.toLowerCase()
+          : i % 3 === 2
+            ? EXTERNAL
+            : EXTERNAL,
+      blockNumber: 1000 + i,
+      timestamp: `2026-09-${String(10 + (i % 18)).padStart(2, "0")}T12:00:00.000Z`,
+      amountUsdt: 100 + i,
+    }));
+    // Fix withdraw OUT rows: from withdraw, to external
+    for (let i = 0; i < rows.length; i++) {
+      if (i % 3 === 1) {
+        rows[i].fromAddress = WITHDRAW.toLowerCase();
+        rows[i].toAddress = EXTERNAL;
+      } else if (i % 3 === 2) {
+        rows[i].fromAddress = RESERVE.toLowerCase();
+        rows[i].toAddress = EXTERNAL;
+      } else {
+        rows[i].fromAddress = EXTERNAL;
+        rows[i].toAddress = DEPOSIT.toLowerCase();
+      }
+    }
+
+    const selected = selectLatestCombinedTransactions(rows, RECENT_TX_LIMIT);
+    expect(selected).toHaveLength(10);
+    expect(selected[0].blockNumber).toBeGreaterThan(selected[9].blockNumber);
+
+    const deposits = selected.filter((t) => t.walletType === "deposit").length;
+    const withdraws = selected.filter((t) => t.walletType === "withdraw").length;
+    const reserves = selected.filter((t) => t.walletType === "reserve").length;
+    expect(deposits + withdraws + reserves).toBe(10);
+    expect(deposits).toBeLessThanOrEqual(10);
+    expect(withdraws).toBeLessThanOrEqual(10);
+    expect(reserves).toBeLessThanOrEqual(10);
+  });
+
+  it("dedupes identical txHash:logIndex across dual-role rows", () => {
+    const shared = {
+      txHash: "0x" + "ab".repeat(32),
+      logIndex: 4,
+      fromAddress: WITHDRAW.toLowerCase(),
+      toAddress: DEPOSIT.toLowerCase(),
+      blockNumber: 50,
+      timestamp: "2026-09-20T10:00:00.000Z",
+    };
+    const selected = selectLatestCombinedTransactions([shared, { ...shared }], 10);
+    expect(selected).toHaveLength(1);
+    expect(selected[0].walletType).toBe("deposit");
+  });
+});
+
+describe("live status derivation", () => {
+  const base = {
+    indexer: "SYNCED" as const,
+    database: "CONNECTED" as const,
+    blockchain: "CONNECTED" as const,
+    latestBlock: 1000,
+    indexedBlock: 995,
+    lastSuccessfulSync: new Date().toISOString(),
+    isHistoricalSyncing: false,
+    configError: null as string | null,
+  };
+
+  it("returns LIVE when synced and fresh", () => {
+    expect(deriveLiveStatus(base)).toBe("LIVE");
+  });
+
+  it("returns SYNCING when historical catch-up is active", () => {
+    expect(
+      deriveLiveStatus({ ...base, isHistoricalSyncing: true }),
+    ).toBe("SYNCING");
+  });
+
+  it("returns STALE when last sync is old", () => {
+    expect(
+      deriveLiveStatus({
+        ...base,
+        lastSuccessfulSync: new Date(Date.now() - 10 * 60_000).toISOString(),
+      }),
+    ).toBe("STALE");
+  });
+
+  it("returns ERROR on database failure", () => {
+    expect(deriveLiveStatus({ ...base, database: "ERROR" })).toBe("ERROR");
   });
 });

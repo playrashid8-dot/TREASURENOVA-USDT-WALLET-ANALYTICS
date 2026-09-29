@@ -1,173 +1,146 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { WalletCardData } from "@/types/analytics";
-import { formatUsdt, formatUsdtExact } from "@/lib/utils/format";
+import type { WalletCardData, WalletCardType } from "@/types/analytics";
+import { formatUsdtExact } from "@/lib/utils/format";
 import { shortAddress } from "@/lib/utils/addresses";
+import { explorerAddressUrl } from "@/lib/config";
 import { LoadingSkeleton } from "./LoadingSkeleton";
-import { CopyIconButton } from "./CopyButton";
+import { CopyButton, CopyIconButton } from "./CopyButton";
 
+/** Full locale amount for cards (never abbreviate to M/B). */
+function formatBalance(amount: number): string {
+  return amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
 interface WalletCardsProps {
   wallets: WalletCardData[];
   loading: boolean;
 }
 
+const THEME: Record<
+  WalletCardType,
+  {
+    card: string;
+    iconBg: string;
+    amount: string;
+    chart: string;
+    glow: string;
+  }
+> = {
+  deposit: {
+    card: "tn-card-deposit",
+    iconBg: "bg-[var(--tn-deposit-bg)] text-[var(--tn-deposit)]",
+    amount:
+      "text-[var(--tn-deposit)] drop-shadow-[0_0_18px_rgba(46,230,166,0.35)]",
+    chart: "stroke-[var(--tn-deposit)]",
+    glow: "from-[rgba(46,230,166,0.12)]",
+  },
+  withdraw: {
+    card: "tn-card-withdraw",
+    iconBg: "bg-[var(--tn-withdraw-bg)] text-[var(--tn-withdraw)]",
+    amount:
+      "text-[var(--tn-withdraw)] drop-shadow-[0_0_18px_rgba(255,107,138,0.35)]",
+    chart: "stroke-[var(--tn-withdraw)]",
+    glow: "from-[rgba(255,107,138,0.12)]",
+  },
+  reserve: {
+    card: "tn-card-reserve",
+    iconBg: "bg-[var(--tn-reserve-bg)] text-[var(--tn-reserve)]",
+    amount:
+      "text-[var(--tn-reserve)] drop-shadow-[0_0_18px_rgba(240,193,75,0.35)]",
+    chart: "stroke-[var(--tn-reserve)]",
+    glow: "from-[rgba(240,193,75,0.12)]",
+  },
+};
+
 export function WalletCards({ wallets, loading }: WalletCardsProps) {
   if (loading && wallets.length === 0) {
-    return <LoadingSkeleton variant="wallets" />;
+    return <LoadingSkeleton />;
   }
 
-  const deposit = wallets.find((w) => w.walletType === "deposit");
-  const withdraw = wallets.find((w) => w.walletType === "withdraw");
-  const reserve = wallets.find((w) => w.walletType === "reserve");
+  const ordered: WalletCardType[] = ["deposit", "withdraw", "reserve"];
 
   return (
-    <div className="space-y-4 md:space-y-5">
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-5">
-        {deposit ? (
-          <WalletCard wallet={deposit} />
-        ) : (
-          <EmptyWalletCard type="deposit" />
-        )}
-        {withdraw ? (
-          <WalletCard wallet={withdraw} />
-        ) : (
-          <EmptyWalletCard type="withdraw" />
-        )}
-      </div>
-      {reserve ? (
-        <ReserveFundCard wallet={reserve} loading={loading} />
-      ) : (
-        <EmptyReserveFundCard />
-      )}
+    <div className="grid grid-cols-1 gap-3.5 md:grid-cols-3 md:gap-4">
+      {ordered.map((type) => {
+        const wallet = wallets.find((w) => w.walletType === type);
+        if (!wallet) {
+          return <EmptyWalletCard key={type} type={type} />;
+        }
+        return <WalletCard key={type} wallet={wallet} />;
+      })}
     </div>
   );
 }
 
 function WalletCard({ wallet }: { wallet: WalletCardData }) {
-  const isDeposit = wallet.walletType === "deposit";
-
-  return (
-    <article
-      className={`tn-card p-5 sm:p-6 ${
-        isDeposit ? "tn-card-deposit" : "tn-card-withdraw"
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <div
-          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${
-            isDeposit
-              ? "bg-[var(--tn-deposit-bg)] text-[var(--tn-deposit)]"
-              : "bg-[var(--tn-withdraw-bg)] text-[var(--tn-withdraw)]"
-          }`}
-        >
-          <WalletIcon />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-bold text-white sm:text-lg">
-            {isDeposit ? "Deposit Wallet" : "Withdraw Wallet"}
-          </h2>
-          <div className="mt-1.5 flex items-center gap-1.5">
-            <p
-              className="truncate font-mono text-[11px] text-[var(--tn-muted)] sm:text-xs"
-              title={wallet.address}
-            >
-              {wallet.address}
-            </p>
-            <CopyIconButton value={wallet.address} label="Copy address" />
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <p className="text-xs font-medium tracking-wide text-[var(--tn-muted)]">
-          Current Balance
-        </p>
-        <p
-          className={`mt-1.5 text-2xl font-extrabold tracking-tight sm:text-3xl ${
-            isDeposit
-              ? "text-[var(--tn-deposit)] drop-shadow-[0_0_18px_rgba(46,230,166,0.35)]"
-              : "text-[var(--tn-withdraw)] drop-shadow-[0_0_18px_rgba(255,107,138,0.35)]"
-          }`}
-          title={
-            wallet.balance != null
-              ? `${formatUsdtExact(wallet.balance)} USDT`
-              : undefined
-          }
-        >
-          {wallet.balance != null
-            ? `${formatUsdt(wallet.balance)} USDT`
-            : wallet.balanceError
-              ? "Unavailable"
-              : "—"}
-        </p>
-      </div>
-    </article>
-  );
-}
-
-function ReserveFundCard({
-  wallet,
-  loading,
-}: {
-  wallet: WalletCardData;
-  loading: boolean;
-}) {
-  const [secondsAgo, setSecondsAgo] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (wallet.balance == null && !wallet.balanceError) {
-      setSecondsAgo(null);
-      return;
-    }
-    const fetchedAt = Date.now();
-    setSecondsAgo(0);
-    const id = setInterval(() => {
-      setSecondsAgo(Math.floor((Date.now() - fetchedAt) / 1000));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [wallet.balance, wallet.balanceError]);
+  const theme = THEME[wallet.walletType];
+  const title =
+    wallet.walletType === "deposit"
+      ? "Deposit Wallet"
+      : wallet.walletType === "withdraw"
+        ? "Withdraw Wallet"
+        : "TREASURENOVA RESERVE FUND";
+  const balanceCaption =
+    wallet.walletType === "reserve"
+      ? "Live USDT Reserve Balance"
+      : "Current Balance";
+  const explorerUrl = explorerAddressUrl(wallet.address);
 
   let balanceLabel: string;
   if (wallet.balance != null) {
-    balanceLabel = `${formatUsdt(wallet.balance)} USDT`;
-  } else if (loading && !wallet.balanceError) {
-    balanceLabel = "Loading...";
+    balanceLabel = formatBalance(wallet.balance);
+  } else if (wallet.balanceError) {
+    balanceLabel = "Unavailable";
   } else {
-    balanceLabel = "Unable to load reserve balance";
+    balanceLabel = "—";
   }
 
   return (
-    <article className="tn-card tn-card-reserve p-5 sm:p-6">
-      <div className="flex items-start gap-3">
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--tn-reserve-bg)] text-[var(--tn-reserve)]">
-          <ShieldIcon />
+    <article
+      className={`tn-card relative overflow-hidden p-3.5 sm:p-5 ${theme.card}`}
+    >
+      <div
+        className={`pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t ${theme.glow} to-transparent opacity-80`}
+        aria-hidden
+      />
+      <WaveChart className={theme.chart} />
+
+      <div className="relative flex items-start gap-2.5 sm:gap-3">
+        <div
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl sm:h-12 sm:w-12 ${theme.iconBg}`}
+        >
+          {wallet.walletType === "reserve" ? <ShieldIcon /> : <WalletIcon />}
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-bold uppercase tracking-wide text-white sm:text-lg">
-            TreasureNOVA Reserve Fund
+          <h2
+            className={`text-[15px] font-bold leading-tight text-white sm:text-base ${
+              wallet.walletType === "reserve" ? "uppercase tracking-wide" : ""
+            }`}
+          >
+            {title}
           </h2>
           <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
             <p
               className="min-w-0 truncate font-mono text-[11px] text-[var(--tn-muted)] sm:text-xs"
               title={wallet.address}
             >
-              {shortAddress(wallet.address, 10)}
+              {shortAddress(wallet.address, 4)}
             </p>
             <CopyIconButton value={wallet.address} label="Copy address" />
           </div>
         </div>
       </div>
 
-      <div className="mt-6">
-        <p className="text-xs font-medium tracking-wide text-[var(--tn-muted)]">
-          Live USDT Reserve Balance
+      <div className="relative mt-4 sm:mt-5">
+        <p className="text-[12px] font-medium tracking-wide text-[var(--tn-muted)]">
+          {balanceCaption}
         </p>
         <p
-          className={`mt-1.5 break-words text-2xl font-extrabold tracking-tight sm:text-3xl ${
-            wallet.balance != null
-              ? "text-[var(--tn-reserve)] drop-shadow-[0_0_18px_rgba(240,193,75,0.35)]"
-              : "text-[var(--tn-muted)]"
+          className={`mt-1 text-[1.85rem] font-extrabold leading-none tracking-tight sm:text-[2rem] ${
+            wallet.balance != null ? theme.amount : "text-[var(--tn-muted)]"
           }`}
           title={
             wallet.balance != null
@@ -177,56 +150,75 @@ function ReserveFundCard({
         >
           {balanceLabel}
         </p>
-        {wallet.balance != null && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--tn-muted)]">
-            <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--tn-live)]">
-              <span
-                className="tn-live-dot inline-block h-2 w-2 rounded-full bg-[var(--tn-live)]"
-                aria-hidden
-              />
-              LIVE
-            </span>
-            {secondsAgo != null && (
-              <span>
-                Updated {secondsAgo === 0 ? "just now" : `${secondsAgo} sec ago`}
-              </span>
-            )}
-          </div>
-        )}
+        <p
+          className={`mt-1 text-sm font-semibold ${
+            wallet.balance != null ? theme.amount : "text-[var(--tn-muted)]"
+          }`}
+        >
+          USDT
+        </p>
+      </div>
+
+      <div className="relative mt-4 flex flex-wrap gap-2">
+        <a
+          href={explorerUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-[var(--tn-border)] bg-[var(--tn-surface-2)]/80 px-3 text-xs font-semibold text-[var(--tn-text)] transition hover:brightness-110 sm:flex-none sm:px-4"
+        >
+          View Wallet
+        </a>
+        <CopyButton
+          value={wallet.address}
+          label="Copy"
+          className="min-h-10 min-w-10 px-3 text-xs"
+        />
       </div>
     </article>
   );
 }
 
-function EmptyWalletCard({ type }: { type: "deposit" | "withdraw" }) {
-  const isDeposit = type === "deposit";
+function EmptyWalletCard({ type }: { type: WalletCardType }) {
+  const theme = THEME[type];
+  const title =
+    type === "deposit"
+      ? "Deposit Wallet"
+      : type === "withdraw"
+        ? "Withdraw Wallet"
+        : "TREASURENOVA RESERVE FUND";
+
   return (
-    <article
-      className={`tn-card p-5 sm:p-6 ${
-        isDeposit ? "tn-card-deposit" : "tn-card-withdraw"
-      }`}
-    >
-      <h2 className="text-base font-bold text-white">
-        {isDeposit ? "Deposit Wallet" : "Withdraw Wallet"}
-      </h2>
-      <p className="mt-6 text-sm text-[var(--tn-muted)]">Balance unavailable</p>
+    <article className={`tn-card p-3.5 sm:p-5 ${theme.card}`}>
+      <h2 className="text-base font-bold text-white">{title}</h2>
+      <p className="mt-4 text-sm text-[var(--tn-muted)]">
+        Unable to load live data
+      </p>
     </article>
   );
 }
 
-function EmptyReserveFundCard() {
+function WaveChart({ className }: { className: string }) {
   return (
-    <article className="tn-card tn-card-reserve p-5 sm:p-6">
-      <h2 className="text-base font-bold uppercase tracking-wide text-white">
-        TreasureNOVA Reserve Fund
-      </h2>
-      <p className="mt-2 text-xs text-[var(--tn-muted)]">
-        Live USDT Reserve Balance
-      </p>
-      <p className="mt-6 text-sm text-[var(--tn-muted)]">
-        Unable to load reserve balance
-      </p>
-    </article>
+    <svg
+      className={`pointer-events-none absolute bottom-14 right-0 h-16 w-[70%] opacity-40 sm:bottom-16 ${className}`}
+      viewBox="0 0 200 60"
+      fill="none"
+      aria-hidden
+    >
+      <path
+        d="M0 40 C20 30, 40 50, 60 35 S100 15, 120 28 S160 50, 200 22"
+        strokeWidth="2"
+        strokeLinecap="round"
+        fill="none"
+      />
+      <path
+        d="M0 48 C25 38, 45 55, 70 42 S110 28, 140 38 S175 52, 200 34"
+        strokeWidth="1.2"
+        opacity="0.45"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
   );
 }
 

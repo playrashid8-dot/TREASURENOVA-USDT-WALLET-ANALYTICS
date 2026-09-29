@@ -22,7 +22,7 @@ export type TransactionAggRow = {
 /**
  * Aggregate IN-only daily analytics from transaction rows.
  * Deposit = to == Deposit Wallet; Withdrawal = to == Withdraw Wallet.
- * Does NOT apply the Transaction History 50 USDT display filter.
+ * Does NOT apply any minimum display-amount filter.
  * Withdraw/Deposit Wallet OUT rows are ignored.
  */
 export function aggregateDailyFromTransactions(
@@ -120,7 +120,7 @@ async function fetchAllTransactionAggRows(date?: string): Promise<
 /**
  * Rebuild daily_stats for a specific UTC date (or all dates if omitted).
  * Counts only indexed USDT Transfer INs (to == deposit/withdraw wallet).
- * Withdraw Wallet OUT rows may exist for Transaction History but are ignored here.
+ * Withdraw Wallet OUT rows may exist in the index but are ignored here.
  * Idempotent — safe to call after upserts and for reconciliation repairs.
  *
  * Paginates through all matching transactions (Supabase default cap is 1000).

@@ -1,9 +1,3 @@
-import {
-  format,
-  formatDistanceToNowStrict,
-  parseISO,
-  isValid,
-} from "date-fns";
 import type { DateRange, DateRangePreset } from "@/types/analytics";
 
 /** Daily grouping timezone: UTC (blockchain timestamps stored as UTC). */
@@ -82,8 +76,8 @@ export function addUtcDays(dateKey: string, days: number): string {
 }
 
 /**
- * Last N fully completed UTC calendar days (excludes today).
- * Returned newest-first: yesterday, yesterday-1, …
+ * Latest N fully completed UTC calendar dates (excludes today).
+ * Order: most recent completed day first (yesterday, …).
  */
 export function lastCompletedUtcDateKeys(
   count: number,
@@ -98,65 +92,76 @@ export function lastCompletedUtcDateKeys(
   return keys;
 }
 
-/** Short UTC display e.g. "25 Sep". */
-export function formatShortUtcDate(iso: string): string {
-  const key = dateKeyUtc(iso);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return iso;
-  const d = new Date(`${key}T12:00:00.000Z`);
-  const months = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  return `${d.getUTCDate()} ${months[d.getUTCMonth()]}`;
-}
-
-export function formatDisplayDate(iso: string): string {
-  const key = dateKeyUtc(iso);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(key)) {
-    return new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      timeZone: "UTC",
-    }).format(new Date(`${key}T12:00:00.000Z`));
+/** Inclusive UTC timestamp range covering the latest N completed UTC days. */
+export function lastCompletedUtcRange(
+  count: number,
+  now: Date = new Date(),
+): { from: string; to: string; dateKeys: string[] } {
+  const dateKeys = lastCompletedUtcDateKeys(count, now);
+  if (dateKeys.length === 0) {
+    const today = utcTodayKey(now);
+    const yesterday = addUtcDays(today, -1);
+    return {
+      from: utcStartOfDayIso(yesterday),
+      to: utcEndOfDayIso(yesterday),
+      dateKeys: [yesterday],
+    };
   }
-  const d = parseISO(iso);
-  if (!isValid(d)) return iso;
-  return format(d, "MMM d, yyyy");
+  const newest = dateKeys[0];
+  const oldest = dateKeys[dateKeys.length - 1];
+  return {
+    from: utcStartOfDayIso(oldest),
+    to: utcEndOfDayIso(newest),
+    dateKeys,
+  };
 }
 
+/** e.g. "Sep 27, 2026" (UTC calendar). */
+export function formatDisplayDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(d);
+}
+
+/** e.g. "14:23:11 UTC" */
+export function formatDisplayTimeUtc(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const timePart = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  }).format(d);
+  return `${timePart} UTC`;
+}
+
+/** e.g. "Sep 27, 2026 • 14:23:11 UTC" */
 export function formatDisplayDateTime(iso: string): string {
-  const d = parseISO(iso);
-  if (!isValid(d)) return iso;
-  return (
-    new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-      timeZone: "UTC",
-    }).format(d) + " UTC"
-  );
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${formatDisplayDate(iso)} • ${formatDisplayTimeUtc(iso)}`;
 }
 
 export function formatRelativeTime(iso: string | null | undefined): string {
   if (!iso) return "Never";
-  const d = parseISO(iso);
-  if (!isValid(d)) return "Unknown";
-  return formatDistanceToNowStrict(d, { addSuffix: true });
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds} seconds ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 /** Date ranges use UTC calendar days to match daily_stats.date. */

@@ -54,25 +54,26 @@ export interface KpiSummary {
   configError?: string | null;
 }
 
-export interface DailyStatRow {
-  date: string;
-  depositAmount: number;
-  withdrawalAmount: number;
-  netCashFlow: number;
-  depositCount: number;
-  withdrawalCount: number;
-  /** True when date is the current UTC calendar day (still running). */
-  isLive: boolean;
-  /** True when the full UTC calendar day has ended (final record). */
-  isCompleted: boolean;
+/** Display wallets: deposit/withdraw (indexed) plus read-only reserve fund. */
+export type WalletCardType = WalletType | "reserve";
+
+export interface WalletCardData {
+  address: string;
+  walletType: WalletCardType;
+  label: string;
+  balance: number | null;
+  totalIncoming: number;
+  transactionCount: number;
+  balanceError?: string | null;
 }
 
+/** Indexed USDT transfer row for Recent Large Transactions. */
 export interface TransactionRow {
   id: string;
   txHash: string;
   logIndex: number;
   walletAddress: string;
-  walletType: WalletType;
+  walletType: WalletCardType;
   tokenContract: string;
   fromAddress: string;
   toAddress: string;
@@ -86,17 +87,36 @@ export interface TransactionRow {
   tokenDecimals: number;
 }
 
-/** Display wallets: deposit/withdraw (indexed) plus read-only reserve fund. */
-export type WalletCardType = WalletType | "reserve";
-
-export interface WalletCardData {
-  address: string;
+export interface LargeTxWalletSection {
   walletType: WalletCardType;
   label: string;
-  balance: number | null;
-  totalIncoming: number;
+  address: string;
   transactionCount: number;
-  balanceError?: string | null;
+  totalUsdt: number;
+  transactions: TransactionRow[];
+}
+
+export interface LargeTransactionsResponse {
+  wallets: LargeTxWalletSection[];
+  minAmountUsdt: number;
+  completedDays: number;
+  dateKeys: string[];
+  dateRange: { from: string; to: string };
+  lastUpdated: string | null;
+  configError?: string | null;
+}
+
+/** Combined latest-N USDT transfers across all monitored wallets. */
+export interface RecentTransactionsResponse {
+  transactions: TransactionRow[];
+  limit: number;
+  lastUpdated: string | null;
+  /** LIVE | SYNCING | STALE | ERROR — derived from indexer/RPC health */
+  liveStatus: "LIVE" | "SYNCING" | "STALE" | "ERROR";
+  latestBlock: number | null;
+  indexedBlock: number | null;
+  blockLag: number | null;
+  configError?: string | null;
 }
 
 export interface SyncStatusResponse {
@@ -111,12 +131,4 @@ export interface SyncStatusResponse {
   status: string;
   isHistoricalSyncing: boolean;
   configError?: string | null;
-}
-
-export interface PaginatedTransactions {
-  data: TransactionRow[];
-  page: number;
-  limit: number;
-  total: number;
-  totalPages: number;
 }

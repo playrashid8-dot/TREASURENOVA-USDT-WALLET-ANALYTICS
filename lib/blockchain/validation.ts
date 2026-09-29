@@ -43,12 +43,11 @@ export function classifyTransfer(
  * - to == Deposit Wallet → deposit
  * - to == Withdraw Wallet → withdraw
  *
- * Transaction History (separate rules):
- * - Deposit tab: to == Deposit Wallet (IN)
- * - Withdrawal tab: from == Withdraw Wallet (OUT)
+ * Additional indexing:
+ * - from == Withdraw Wallet (OUT) is stored for future use / completeness
  *
- * Withdraw Wallet OUT is indexed so history can show it, but aggregation
- * only counts rows where to_address matches the withdraw wallet (IN).
+ * Withdraw Wallet OUT is indexed, but aggregation only counts rows where
+ * to_address matches the withdraw wallet (IN).
  * Deposit Wallet OUT is never indexed.
  */
 export function classifyIndexedTransferRoles(
@@ -65,7 +64,7 @@ export function classifyIndexedTransferRoles(
   if (addressesEqual(toAddress, WITHDRAW_WALLET)) {
     roles.push({ walletType: "withdraw", walletAddress: withdraw });
   }
-  // History-only: Withdraw Wallet OUT (not a self-transfer already stored as IN)
+  // Withdraw Wallet OUT (stored; daily analytics ignores OUT)
   if (
     addressesEqual(fromAddress, WITHDRAW_WALLET) &&
     !addressesEqual(toAddress, WITHDRAW_WALLET)
@@ -82,7 +81,7 @@ export function classifyIndexedTransferRoles(
  * - Withdrawal = USDT Transfer where to == Withdraw Wallet
  * - Deposit/Withdraw Wallet OUT are never counted in daily analytics
  *
- * For full indexing (including Withdraw OUT for Transaction History),
+ * For full indexing (including Withdraw OUT),
  * use validateTokenTransfers / classifyIndexedTransferRoles.
  */
 export function validateTokenTransfer(

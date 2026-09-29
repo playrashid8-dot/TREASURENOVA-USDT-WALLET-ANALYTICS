@@ -301,7 +301,7 @@ async function fetchSqdPage(
         topic0: [TRANSFER_EVENT_TOPIC],
         topic2: [topicAddress(WITHDRAW_WALLET)],
       },
-      // Withdraw Wallet OUT — Transaction History only (daily analytics ignores OUT)
+      // Withdraw Wallet OUT — indexed; daily analytics ignores OUT
       {
         address: [normalizeAddress(token)],
         topic0: [TRANSFER_EVENT_TOPIC],

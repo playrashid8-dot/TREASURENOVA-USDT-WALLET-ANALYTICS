@@ -87,18 +87,28 @@ export const LOG_SCAN_CHUNK_SIZE = parsePositiveInt(
   9_999,
 );
 
-export const MAX_TRANSACTION_PAGE_SIZE = parsePositiveInt(
-  process.env.MAX_TRANSACTION_PAGE_SIZE,
-  100,
-);
-
 /**
- * Display-only floor for transaction lists (Recent, History, export).
+ * Display-only floor for optional transaction list tooling (e.g. sync verification).
  * Does not delete or alter indexed rows; daily stats/totals stay unfiltered.
  */
 export const MIN_DISPLAY_USDT_AMOUNT = parseNonNegativeNumber(
   process.env.MIN_DISPLAY_USDT_AMOUNT,
   50,
+);
+
+/**
+ * Floor for the Recent Large Transactions dashboard section.
+ * Display-only — does not alter indexed rows or daily stats.
+ */
+export const LARGE_TX_MIN_USDT = parseNonNegativeNumber(
+  process.env.LARGE_TX_MIN_USDT,
+  10_000,
+);
+
+/** Number of latest completed UTC days shown in Recent Large Transactions. */
+export const LARGE_TX_COMPLETED_DAYS = parsePositiveInt(
+  process.env.LARGE_TX_COMPLETED_DAYS,
+  5,
 );
 
 export const SYNC_SECRET = requireEnv("SYNC_SECRET");
