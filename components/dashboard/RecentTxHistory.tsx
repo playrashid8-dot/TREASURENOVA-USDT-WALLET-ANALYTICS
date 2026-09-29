@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   RecentTransactionsResponse,
   TransactionRow,
@@ -13,8 +13,13 @@ import {
   formatRelativeTime,
 } from "@/lib/utils/dates";
 import { formatUsdtExact } from "@/lib/utils/format";
-import { explorerTxUrl } from "@/lib/config";
-import { CopyIconButton } from "./CopyButton";
+import { LARGE_TX_MIN_USDT, explorerTxUrl } from "@/lib/config";
+import {
+  RECENT_TX_LIMIT,
+  meetsLargeTxMinUsdt,
+  selectLatestCombinedTransactions,
+} from "@/lib/analytics/filters";
+import { CopyButton, CopyIconButton } from "./CopyButton";
 import { EmptyState } from "./EmptyState";
 
 function formatAmount(amount: number): string {
@@ -83,7 +88,18 @@ export function RecentTxHistory({
   }, [data?.lastUpdated]);
 
   const liveStatus = data?.liveStatus ?? "STALE";
-  const txs = data?.transactions ?? [];
+
+  // Defensive client filter — API already enforces >= 10,000 + limit 10.
+  const txs = useMemo(() => {
+    const rows = data?.transactions ?? [];
+    const filtered = rows.filter((tx) =>
+      meetsLargeTxMinUsdt(tx.amountUsdt, LARGE_TX_MIN_USDT, {
+        amountRaw: tx.amountRaw,
+        tokenDecimals: tx.tokenDecimals,
+      }),
+    );
+    return selectLatestCombinedTransactions(filtered, RECENT_TX_LIMIT);
+  }, [data?.transactions]);
 
   return (
     <article className="tn-card w-full max-w-full overflow-hidden p-3.5 sm:p-5">
@@ -95,7 +111,10 @@ export function RecentTxHistory({
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-white">Recent TX History</h2>
             <p className="mt-0.5 text-sm text-[var(--tn-muted)]">
-              Latest 10 USDT transfers ≥ 10,000 (all wallets)
+              Latest 10 USDT Transactions (All Wallets Combined)
+            </p>
+            <p className="mt-0.5 text-xs text-[var(--tn-muted)]">
+              Minimum: {LARGE_TX_MIN_USDT.toLocaleString("en-US")} USDT
             </p>
           </div>
         </div>
@@ -150,7 +169,7 @@ export function RecentTxHistory({
           ))}
         </div>
       ) : txs.length === 0 ? (
-        <EmptyState message="No indexed USDT transfers ≥ 10,000 for the configured wallets." />
+        <EmptyState message="No transactions >= 10,000 USDT found" />
       ) : (
         <ol className="space-y-2.5">
           {txs.map((tx, index) => (
@@ -240,23 +259,33 @@ function TxCard({ tx, index }: { tx: TransactionRow; index: number }) {
           </div>
 
           <dl className="mt-2.5 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2 sm:gap-x-4 sm:text-xs">
-            <div className="min-w-0">
-              <dt className="inline text-[var(--tn-muted)]">From: </dt>
+            <div className="flex min-w-0 items-center gap-1">
+              <dt className="shrink-0 text-[var(--tn-muted)]">From:</dt>
               <dd
-                className="inline font-mono text-[var(--tn-text)]"
+                className="min-w-0 truncate font-mono text-[var(--tn-text)]"
                 title={tx.fromAddress}
               >
                 {shortAddress(tx.fromAddress, 4)}
               </dd>
+              <CopyIconButton
+                value={tx.fromAddress}
+                label="Copy full From address"
+                className="h-6 w-6 shrink-0"
+              />
             </div>
-            <div className="min-w-0">
-              <dt className="inline text-[var(--tn-muted)]">To: </dt>
+            <div className="flex min-w-0 items-center gap-1">
+              <dt className="shrink-0 text-[var(--tn-muted)]">To:</dt>
               <dd
-                className="inline font-mono text-[var(--tn-text)]"
+                className="min-w-0 truncate font-mono text-[var(--tn-text)]"
                 title={tx.toAddress}
               >
                 {shortAddress(tx.toAddress, 4)}
               </dd>
+              <CopyIconButton
+                value={tx.toAddress}
+                label="Copy full To address"
+                className="h-6 w-6 shrink-0"
+              />
             </div>
             <div className="min-w-0">
               <dt className="inline text-[var(--tn-muted)]">Block: </dt>
@@ -276,10 +305,10 @@ function TxCard({ tx, index }: { tx: TransactionRow; index: number }) {
           </dl>
 
           <div className="mt-2.5 flex flex-wrap gap-2">
-            <CopyIconButton
+            <CopyButton
               value={tx.txHash}
-              label="Copy transaction hash"
-              className="h-8 w-8 rounded-lg border border-[var(--tn-border)]"
+              label="Copy TX"
+              className="h-8 min-h-0 rounded-lg border border-[var(--tn-border)] bg-transparent px-2.5 py-0 text-[11px]"
             />
             <a
               href={explorerTxUrl(tx.txHash)}

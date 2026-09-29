@@ -5,7 +5,7 @@ import {
   shortAddress,
   isValidAddress,
 } from "@/lib/utils/addresses";
-import { rawToUsdt, formatUsdt, formatSignedUsdt } from "@/lib/utils/format";
+import { rawToUsdt, formatUsdt, formatSignedUsdt, rawMeetsMinUsdt } from "@/lib/utils/format";
 import {
   computeNetCashFlow,
   sumDailyStats,
@@ -83,6 +83,16 @@ describe("token amount parsing", () => {
   it("formats signed amounts", () => {
     expect(formatSignedUsdt(1250, true)).toBe("+ 1,250.00 USDT");
     expect(formatSignedUsdt(500, false)).toBe("- 500.00 USDT");
+  });
+
+  it("compares raw amounts to min floor with BigInt (6 and 18 decimals)", () => {
+    // 6 decimals: 10,000 USDT = 10_000_000_000
+    expect(rawMeetsMinUsdt("9999999999", 6, 10_000)).toBe(false);
+    expect(rawMeetsMinUsdt("10000000000", 6, 10_000)).toBe(true);
+    expect(rawMeetsMinUsdt("10000000001", 6, 10_000)).toBe(true);
+    // 18 decimals (BSC USDT)
+    expect(rawMeetsMinUsdt("9999999999999999999999", 18, 10_000)).toBe(false);
+    expect(rawMeetsMinUsdt("10000000000000000000000", 18, 10_000)).toBe(true);
   });
 });
 
@@ -482,6 +492,26 @@ describe("transfer indexing roles", () => {
       { walletType: "withdraw", walletAddress: WITHDRAW.toLowerCase() },
     ]);
   });
+
+  it("indexes Reserve Fund OUT as reserve", () => {
+    const reserve = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
+    const roles = classifyIndexedTransferRoles(
+      reserve,
+      "0x2222222222222222222222222222222222222222",
+    );
+    expect(roles).toEqual([
+      { walletType: "reserve", walletAddress: reserve.toLowerCase() },
+    ]);
+  });
+
+  it("indexes Reserve→Deposit as both deposit IN and reserve OUT", () => {
+    const reserve = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
+    const roles = classifyIndexedTransferRoles(reserve, DEPOSIT);
+    expect(roles).toEqual([
+      { walletType: "deposit", walletAddress: DEPOSIT.toLowerCase() },
+      { walletType: "reserve", walletAddress: reserve.toLowerCase() },
+    ]);
+  });
 });
 
 describe("duplicate identity", () => {
@@ -676,6 +706,126 @@ describe("recent TX classification + latest-10 combined", () => {
     expect(selected.every((t) => t.amountUsdt >= LARGE_TX_MIN_USDT)).toBe(true);
     expect(selected[0].amountUsdt).toBe(10_000);
     expect(selected[1].amountUsdt).toBe(50_000);
+  });
+
+  it("never lets small newest txs occupy the 10 slots", () => {
+    const small = Array.from({ length: 100 }, (_, i) => ({
+      txHash: `0x${(i + 1).toString(16).padStart(64, "0")}`,
+      logIndex: 0,
+      fromAddress: EXTERNAL,
+      toAddress: DEPOSIT.toLowerCase(),
+      blockNumber: 10_000 + i,
+      timestamp: `2026-09-28T${String(i % 24).padStart(2, "0")}:00:00.000Z`,
+      amountUsdt: 88.78 + (i % 10),
+    }));
+    const qualifying = [
+      {
+        txHash: "0x" + "aa".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 500,
+        timestamp: "2026-09-20T12:00:00.000Z",
+        amountUsdt: 25_000,
+      },
+      {
+        txHash: "0x" + "bb".repeat(32),
+        logIndex: 0,
+        fromAddress: WITHDRAW.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 400,
+        timestamp: "2026-09-19T12:00:00.000Z",
+        amountUsdt: 10_000.01,
+      },
+      {
+        txHash: "0x" + "cc".repeat(32),
+        logIndex: 0,
+        fromAddress: RESERVE.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 300,
+        timestamp: "2026-09-18T12:00:00.000Z",
+        amountUsdt: 50_000,
+      },
+      {
+        txHash: "0x" + "dd".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 200,
+        timestamp: "2026-09-17T12:00:00.000Z",
+        amountUsdt: 15_000,
+      },
+      {
+        txHash: "0x" + "ee".repeat(32),
+        logIndex: 0,
+        fromAddress: WITHDRAW.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 100,
+        timestamp: "2026-09-16T12:00:00.000Z",
+        amountUsdt: 10_000,
+      },
+    ];
+    const selected = selectLatestCombinedTransactions(
+      [...small, ...qualifying],
+      RECENT_TX_LIMIT,
+    );
+    expect(selected).toHaveLength(5);
+    expect(selected.every((t) => t.amountUsdt >= 10_000)).toBe(true);
+    expect(selected[0].amountUsdt).toBe(25_000);
+  });
+
+  it("returns empty when only sub-10k transfers exist", () => {
+    const rows = [
+      {
+        txHash: "0x" + "11".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 99,
+        timestamp: "2026-09-21T12:00:00.000Z",
+        amountUsdt: 88.78,
+      },
+      {
+        txHash: "0x" + "22".repeat(32),
+        logIndex: 0,
+        fromAddress: WITHDRAW.toLowerCase(),
+        toAddress: EXTERNAL,
+        blockNumber: 98,
+        timestamp: "2026-09-21T11:00:00.000Z",
+        amountUsdt: 65.22,
+      },
+    ];
+    expect(selectLatestCombinedTransactions(rows, RECENT_TX_LIMIT)).toEqual([]);
+  });
+
+  it("uses raw BigInt floor when amountRaw is provided", () => {
+    const rows = [
+      {
+        txHash: "0x" + "01".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 10,
+        timestamp: "2026-09-21T12:00:00.000Z",
+        amountUsdt: 9999.999, // float noise — raw decides
+        amountRaw: "9999999999999999999999",
+        tokenDecimals: 18,
+      },
+      {
+        txHash: "0x" + "02".repeat(32),
+        logIndex: 0,
+        fromAddress: EXTERNAL,
+        toAddress: DEPOSIT.toLowerCase(),
+        blockNumber: 9,
+        timestamp: "2026-09-21T11:00:00.000Z",
+        amountUsdt: 9999.999,
+        amountRaw: "10000000000000000000000",
+        tokenDecimals: 18,
+      },
+    ];
+    const selected = selectLatestCombinedTransactions(rows, RECENT_TX_LIMIT);
+    expect(selected).toHaveLength(1);
+    expect(selected[0].amountRaw).toBe("10000000000000000000000");
   });
 
   it("dedupes identical txHash:logIndex across dual-role rows", () => {

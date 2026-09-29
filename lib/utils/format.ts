@@ -53,6 +53,29 @@ export function usdtToRaw(amount: string | number, decimals: number): string {
   return parseUnits(String(amount), decimals).toString();
 }
 
+/**
+ * Compare a raw token amount to a human USDT floor using BigInt
+ * (avoids float errors). `minUsdt` should be a finite non-negative number.
+ */
+export function rawMeetsMinUsdt(
+  amountRaw: string,
+  decimals: number,
+  minUsdt: number,
+): boolean {
+  if (!/^\d+$/.test(amountRaw)) return false;
+  if (!Number.isFinite(decimals) || decimals < 0 || decimals > 36) return false;
+  if (!Number.isFinite(minUsdt) || minUsdt < 0) return false;
+  try {
+    const minRaw = parseUnits(
+      Number.isInteger(minUsdt) ? String(minUsdt) : minUsdt.toFixed(decimals),
+      decimals,
+    );
+    return BigInt(amountRaw) >= minRaw;
+  } catch {
+    return false;
+  }
+}
+
 export function formatBlockNumber(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   return n.toLocaleString("en-US");

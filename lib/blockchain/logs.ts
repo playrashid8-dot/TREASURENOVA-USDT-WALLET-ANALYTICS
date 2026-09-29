@@ -10,6 +10,7 @@ import {
   CHAIN_ID,
   DEPOSIT_WALLET,
   LOG_SCAN_CHUNK_SIZE,
+  RESERVE_FUND_WALLET,
   SYNC_START_BLOCK,
   TRANSFER_EVENT_TOPIC,
   USDT_CONTRACT_ADDRESS,
@@ -307,6 +308,16 @@ async function fetchSqdPage(
         topic0: [TRANSFER_EVENT_TOPIC],
         topic1: [topicAddress(WITHDRAW_WALLET)],
       },
+      // Reserve Fund OUT — Recent TX History; daily analytics ignores OUT
+      ...(isAddress(RESERVE_FUND_WALLET)
+        ? [
+            {
+              address: [normalizeAddress(token)],
+              topic0: [TRANSFER_EVENT_TOPIC],
+              topic1: [topicAddress(RESERVE_FUND_WALLET)],
+            },
+          ]
+        : []),
     ],
   };
 
@@ -798,7 +809,9 @@ async function scanViaRpc(options: {
   const toAddresses = [DEPOSIT_WALLET, WITHDRAW_WALLET].filter((a) =>
     isAddress(a),
   );
-  const fromAddresses = [WITHDRAW_WALLET].filter((a) => isAddress(a));
+  const fromAddresses = [WITHDRAW_WALLET, RESERVE_FUND_WALLET].filter((a) =>
+    isAddress(a),
+  );
 
   let cursor = Math.max(0, options.startBlock);
   const endBlock = Math.max(cursor, options.endBlock);

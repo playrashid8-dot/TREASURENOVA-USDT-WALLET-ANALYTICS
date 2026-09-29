@@ -1,5 +1,6 @@
 import {
   DEPOSIT_WALLET,
+  LARGE_TX_MIN_USDT,
   RESERVE_FUND_WALLET,
   SYNC_KEY,
   USDT_CONTRACT_ADDRESS,
@@ -9,6 +10,7 @@ import {
 import {
   RECENT_TX_LIMIT,
   applyLargeTxMinAmountFilter,
+  meetsLargeTxMinUsdt,
   selectLatestCombinedTransactions,
 } from "@/lib/analytics/filters";
 import { blockLag, deriveLiveStatus } from "@/lib/analytics/live-status";
@@ -29,8 +31,11 @@ import type {
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-/** Extra rows fetched so OR-overlap / dual-role logs can be trimmed to 10. */
-const FETCH_BUFFER = 80;
+/**
+ * Fetch buffer after the DB amount floor. Direction classification + dedupe
+ * may drop some rows; never apply the global LIMIT 10 before the 10k filter.
+ */
+const FETCH_BUFFER = 120;
 
 type DbTxRow = {
   id: string;
@@ -117,37 +122,48 @@ export async function GET(request: Request) {
 
     const supabase = getSupabaseAdmin();
 
+    // Direction filters matching display classification (all three wallets):
+    // Deposit IN | Withdraw OUT | Reserve OUT
+    const directionOr = [
+      `to_address.eq.${deposit}`,
+      `and(from_address.eq.${withdraw},to_address.neq.${withdraw})`,
+      ...(reserve
+        ? [`and(from_address.eq.${reserve},to_address.neq.${reserve})`]
+        : []),
+    ].join(",");
+
     let query = supabase
       .from("transactions")
       .select(
         "id, tx_hash, log_index, wallet_address, wallet_type, token_contract, from_address, to_address, amount_raw, amount_usdt, block_number, block_hash, timestamp, status, token_symbol, token_decimals",
       )
       .eq("status", "success")
+      .or(directionOr)
       .order("block_number", { ascending: false })
       .order("log_index", { ascending: false })
       .limit(FETCH_BUFFER);
 
-    // Global display floor: only USDT transfers >= LARGE_TX_MIN_USDT (10,000).
+    // Filter amount >= 10,000 BEFORE the global LIMIT 10 (applied in selector).
     query = applyLargeTxMinAmountFilter(query);
 
     if (token) {
       query = query.eq("token_contract", token);
     }
 
-    // Involving any configured wallet (from or to)
-    query = query.or(
-      [
-        `from_address.in.(${deposit},${withdraw},${reserve})`,
-        `to_address.in.(${deposit},${withdraw},${reserve})`,
-      ].join(","),
-    );
-
     const { data, error } = await query;
     if (error) {
       throw new Error(error.message);
     }
 
-    const mapped = ((data ?? []) as DbTxRow[]).map(mapDbRow);
+    const mapped = ((data ?? []) as DbTxRow[])
+      .map(mapDbRow)
+      .filter((row) =>
+        meetsLargeTxMinUsdt(row.amountUsdt, LARGE_TX_MIN_USDT, {
+          amountRaw: row.amountRaw,
+          tokenDecimals: row.tokenDecimals,
+        }),
+      );
+
     const selected = selectLatestCombinedTransactions(mapped, RECENT_TX_LIMIT);
 
     const transactions: TransactionRow[] = selected.map((row) => ({

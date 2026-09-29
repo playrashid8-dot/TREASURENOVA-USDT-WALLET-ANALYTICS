@@ -54,7 +54,11 @@ export const WITHDRAW_WALLET = requireEnv(
   "0x48A909049FB00581CA83beA39BB824eBb90132FA",
 );
 
-/** Read-only USDT reserve fund wallet (display balance only — not indexed). */
+/**
+ * TREASURENOVA Reserve Fund wallet.
+ * Live balanceOf for the wallet card; Reserve OUT transfers are indexed for
+ * Recent TX History (same outbound classification as the dashboard).
+ */
 export const RESERVE_FUND_WALLET = requireEnv(
   "RESERVE_FUND_WALLET",
   "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904",

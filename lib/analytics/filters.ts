@@ -6,10 +6,14 @@ import {
 } from "@/lib/config";
 import { addressesEqual, normalizeAddress } from "@/lib/utils/addresses";
 import { parsePreset, resolveDateRange } from "@/lib/utils/dates";
+import { rawMeetsMinUsdt } from "@/lib/utils/format";
 import type { DateRange, WalletCardType } from "@/types/analytics";
 
 /** Max rows in the combined Recent TX History section. */
 export const RECENT_TX_LIMIT = 10;
+
+/** Alias for the Recent TX History floor (10,000 USDT). */
+export const MIN_TRANSACTION_USDT = LARGE_TX_MIN_USDT;
 
 /**
  * Display classification for Recent TX History (address-derived, not labels):
@@ -47,16 +51,23 @@ export function qualifiesForRecentTxHistory(
   fromAddress: string,
   toAddress: string,
   amountUsdt?: number,
+  amountRaw?: string,
+  tokenDecimals?: number,
 ): boolean {
   if (classifyRecentTxWallet(fromAddress, toAddress) == null) return false;
-  if (amountUsdt === undefined) return true;
-  return meetsLargeTxMinUsdt(amountUsdt);
+  if (amountUsdt === undefined && amountRaw === undefined) return true;
+  return meetsLargeTxMinUsdt(amountUsdt ?? 0, LARGE_TX_MIN_USDT, {
+    amountRaw,
+    tokenDecimals,
+  });
 }
 
 /**
  * Merge candidate rows into a single newest-first list (global LIMIT).
- * Display-only floor: amountUsdt >= LARGE_TX_MIN_USDT (default 10,000).
- * Dedupes by txHash:logIndex, classifies from addresses, caps at `limit`.
+ * Processing order:
+ *   wallet classification → amount >= MIN_TRANSACTION_USDT → combine →
+ *   sort blockNumber DESC / logIndex DESC → slice(0, 10)
+ * Dedupes by txHash:logIndex.
  */
 export function selectLatestCombinedTransactions<
   T extends {
@@ -67,6 +78,8 @@ export function selectLatestCombinedTransactions<
     blockNumber: number;
     timestamp: string;
     amountUsdt: number;
+    amountRaw?: string;
+    tokenDecimals?: number;
   },
 >(
   rows: T[],
@@ -78,7 +91,14 @@ export function selectLatestCombinedTransactions<
   for (const row of rows) {
     const key = `${row.txHash}:${row.logIndex}`;
     if (seen.has(key)) continue;
-    if (!meetsLargeTxMinUsdt(row.amountUsdt)) continue;
+    if (
+      !meetsLargeTxMinUsdt(row.amountUsdt, LARGE_TX_MIN_USDT, {
+        amountRaw: row.amountRaw,
+        tokenDecimals: row.tokenDecimals,
+      })
+    ) {
+      continue;
+    }
     const walletType = classifyRecentTxWallet(row.fromAddress, row.toAddress);
     if (!walletType) continue;
     seen.add(key);
@@ -87,9 +107,8 @@ export function selectLatestCombinedTransactions<
 
   classified.sort((a, b) => {
     if (b.blockNumber !== a.blockNumber) return b.blockNumber - a.blockNumber;
-    const t = b.timestamp.localeCompare(a.timestamp);
-    if (t !== 0) return t;
-    return b.logIndex - a.logIndex;
+    if (b.logIndex !== a.logIndex) return b.logIndex - a.logIndex;
+    return b.timestamp.localeCompare(a.timestamp);
   });
 
   return classified.slice(0, Math.max(0, limit));
@@ -118,11 +137,22 @@ export function applyTimestampFilter<
   return q;
 }
 
-/** True when a transaction amount meets the large-tx display floor. */
+/**
+ * True when a transaction amount meets the large-tx display floor.
+ * Prefer BigInt raw comparison when amountRaw + decimals are available.
+ */
 export function meetsLargeTxMinUsdt(
   amountUsdt: number,
   minAmount = LARGE_TX_MIN_USDT,
+  opts?: { amountRaw?: string; tokenDecimals?: number },
 ): boolean {
+  if (
+    opts?.amountRaw &&
+    opts.tokenDecimals !== undefined &&
+    Number.isFinite(opts.tokenDecimals)
+  ) {
+    return rawMeetsMinUsdt(opts.amountRaw, opts.tokenDecimals, minAmount);
+  }
   return Number.isFinite(amountUsdt) && amountUsdt >= minAmount;
 }
 

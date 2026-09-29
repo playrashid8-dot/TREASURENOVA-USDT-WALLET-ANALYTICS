@@ -1,5 +1,6 @@
 import {
   DEPOSIT_WALLET,
+  RESERVE_FUND_WALLET,
   SYNC_KEY,
   USDT_CONTRACT_ADDRESS,
   WITHDRAW_WALLET,
@@ -101,10 +102,10 @@ async function upsertSyncState(patch: {
 
 async function ensureWalletsSeeded(tokenContract: string, chainId: number) {
   const supabase = getSupabaseAdmin();
-  const rows = [
+  const baseRows = [
     {
       address: normalizeAddress(DEPOSIT_WALLET),
-      wallet_type: "deposit",
+      wallet_type: "deposit" as const,
       label: "Deposit Wallet",
       chain_id: chainId,
       token_contract: normalizeAddress(tokenContract),
@@ -113,7 +114,7 @@ async function ensureWalletsSeeded(tokenContract: string, chainId: number) {
     },
     {
       address: normalizeAddress(WITHDRAW_WALLET),
-      wallet_type: "withdraw",
+      wallet_type: "withdraw" as const,
       label: "Withdraw Wallet",
       chain_id: chainId,
       token_contract: normalizeAddress(tokenContract),
@@ -122,11 +123,32 @@ async function ensureWalletsSeeded(tokenContract: string, chainId: number) {
     },
   ];
 
-  const { error } = await supabase.from("wallets").upsert(rows, {
+  const { error } = await supabase.from("wallets").upsert(baseRows, {
     onConflict: "address",
   });
   if (error) {
     console.warn("[sync] Wallet seed warning:", error.message);
+  }
+
+  if (!RESERVE_FUND_WALLET) return;
+
+  const { error: reserveError } = await supabase.from("wallets").upsert(
+    {
+      address: normalizeAddress(RESERVE_FUND_WALLET),
+      wallet_type: "reserve",
+      label: "TREASURENOVA Reserve Fund",
+      chain_id: chainId,
+      token_contract: normalizeAddress(tokenContract),
+      is_active: true,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "address" },
+  );
+  if (reserveError) {
+    console.warn(
+      "[sync] Reserve wallet seed skipped (apply migration allowing wallet_type=reserve):",
+      reserveError.message,
+    );
   }
 }
 

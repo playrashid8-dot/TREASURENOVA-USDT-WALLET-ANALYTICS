@@ -2,6 +2,7 @@ import { isAddress } from "ethers";
 import {
   CHAIN_ID,
   DEPOSIT_WALLET,
+  RESERVE_FUND_WALLET,
   USDT_CONTRACT_ADDRESS,
   WITHDRAW_WALLET,
 } from "@/lib/config";
@@ -43,12 +44,12 @@ export function classifyTransfer(
  * - to == Deposit Wallet → deposit
  * - to == Withdraw Wallet → withdraw
  *
- * Additional indexing:
- * - from == Withdraw Wallet (OUT) is stored for future use / completeness
+ * Additional indexing (history / Recent TX):
+ * - from == Withdraw Wallet (OUT)
+ * - from == Reserve Fund (OUT) — same outbound semantics as display classification
  *
- * Withdraw Wallet OUT is indexed, but aggregation only counts rows where
- * to_address matches the withdraw wallet (IN).
- * Deposit Wallet OUT is never indexed.
+ * Withdraw / Reserve OUT are indexed, but aggregation only counts rows where
+ * to_address matches deposit/withdraw (IN). Deposit Wallet OUT is never indexed.
  */
 export function classifyIndexedTransferRoles(
   fromAddress: string,
@@ -57,6 +58,7 @@ export function classifyIndexedTransferRoles(
   const roles: IndexedTransferRole[] = [];
   const deposit = normalizeAddress(DEPOSIT_WALLET);
   const withdraw = normalizeAddress(WITHDRAW_WALLET);
+  const reserve = normalizeAddress(RESERVE_FUND_WALLET);
 
   if (addressesEqual(toAddress, DEPOSIT_WALLET)) {
     roles.push({ walletType: "deposit", walletAddress: deposit });
@@ -70,6 +72,14 @@ export function classifyIndexedTransferRoles(
     !addressesEqual(toAddress, WITHDRAW_WALLET)
   ) {
     roles.push({ walletType: "withdraw", walletAddress: withdraw });
+  }
+  // Reserve Fund OUT (Recent TX History; daily analytics ignores)
+  if (
+    reserve &&
+    addressesEqual(fromAddress, RESERVE_FUND_WALLET) &&
+    !addressesEqual(toAddress, RESERVE_FUND_WALLET)
+  ) {
+    roles.push({ walletType: "reserve", walletAddress: reserve });
   }
 
   return roles;

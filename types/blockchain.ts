@@ -1,4 +1,4 @@
-export type WalletType = "deposit" | "withdraw";
+export type WalletType = "deposit" | "withdraw" | "reserve";
 
 export type TransactionStatus = "success" | "failed";
 
