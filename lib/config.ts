@@ -56,8 +56,8 @@ export const WITHDRAW_WALLET = requireEnv(
 
 /**
  * TREASURENOVA Reserve Fund wallet.
- * Live balanceOf for the wallet card; Reserve OUT transfers are indexed for
- * Recent TX History (same outbound classification as the dashboard).
+ * Live balanceOf for the wallet card; Reserve IN and OUT transfers are indexed
+ * for Recent TX History alongside Deposit and Withdraw.
  */
 export const RESERVE_FUND_WALLET = requireEnv(
   "RESERVE_FUND_WALLET",

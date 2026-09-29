@@ -10,6 +10,7 @@ import {
 import {
   RECENT_TX_LIMIT,
   applyLargeTxMinAmountFilter,
+  applyLargeTxWalletFilter,
   meetsLargeTxMinUsdt,
   selectLatestCombinedTransactions,
 } from "@/lib/analytics/filters";
@@ -21,21 +22,27 @@ import {
   jsonOk,
   withRateLimitHeaders,
 } from "@/lib/api/response";
+import { maybeCatchUpSync } from "@/lib/blockchain/catch-up";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeAddress } from "@/lib/utils/addresses";
 import type {
   RecentTransactionsResponse,
   TransactionRow,
+  WalletCardType,
 } from "@/types/analytics";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * Fetch buffer after the DB amount floor. Direction classification + dedupe
- * may drop some rows; never apply the global LIMIT 10 before the 10k filter.
+ * Per-wallet fetch cap after the DB amount floor.
+ * Each wallet is queried independently so a busy Reserve Fund cannot crowd
+ * Deposit/Withdraw out of a single shared LIMIT buffer.
+ * Final global cap is still RECENT_TX_LIMIT (10) after merge/dedupe/sort.
  */
-const FETCH_BUFFER = 120;
+const PER_WALLET_FETCH = 40;
+
+const DEBUG_RECENT_TX = process.env.RECENT_TX_DEBUG === "1";
 
 type DbTxRow = {
   id: string;
@@ -79,6 +86,56 @@ function mapDbRow(r: DbTxRow): Omit<TransactionRow, "walletType"> & {
   };
 }
 
+/**
+ * Fetch qualifying rows for one wallet independently (IN + OUT).
+ * Filter order: success → USDT token → wallet IN|OUT → amount >= 10k →
+ * newest first → per-wallet buffer (never global LIMIT 10 here).
+ */
+async function fetchWalletRecentCandidates(
+  walletType: WalletCardType,
+  token: string,
+): Promise<{ rows: ReturnType<typeof mapDbRow>[]; found: number; ge10k: number }> {
+  const supabase = getSupabaseAdmin();
+
+  let query = supabase
+    .from("transactions")
+    .select(
+      "id, tx_hash, log_index, wallet_address, wallet_type, token_contract, from_address, to_address, amount_raw, amount_usdt, block_number, block_hash, timestamp, status, token_symbol, token_decimals",
+      DEBUG_RECENT_TX ? { count: "exact" } : undefined,
+    )
+    .eq("status", "success")
+    .order("block_number", { ascending: false })
+    .order("log_index", { ascending: false })
+    .limit(PER_WALLET_FETCH);
+
+  if (token) {
+    query = query.eq("token_contract", token);
+  }
+
+  query = applyLargeTxWalletFilter(query, walletType);
+  query = applyLargeTxMinAmountFilter(query);
+
+  const { data, error, count } = await query;
+  if (error) {
+    throw new Error(`${walletType} recent-tx query failed: ${error.message}`);
+  }
+
+  const mapped = ((data ?? []) as DbTxRow[])
+    .map(mapDbRow)
+    .filter((row) =>
+      meetsLargeTxMinUsdt(row.amountUsdt, LARGE_TX_MIN_USDT, {
+        amountRaw: row.amountRaw,
+        tokenDecimals: row.tokenDecimals,
+      }),
+    );
+
+  return {
+    rows: mapped,
+    found: count ?? mapped.length,
+    ge10k: mapped.length,
+  };
+}
+
 export async function GET(request: Request) {
   const limited = enforceRateLimit(request, "recent-transactions", 45, 60_000);
   if (!limited.ok) return limited.response;
@@ -103,6 +160,9 @@ export async function GET(request: Request) {
   }
 
   try {
+    // Keep indexer fresh without a UI change — catch up when lag/stale.
+    maybeCatchUpSync("recent-transactions");
+
     const sync = await buildSyncStatusPayload();
     const liveStatus = deriveLiveStatus({
       indexer: sync.indexer,
@@ -120,51 +180,32 @@ export async function GET(request: Request) {
     const reserve = normalizeAddress(RESERVE_FUND_WALLET);
     const token = normalizeAddress(USDT_CONTRACT_ADDRESS);
 
-    const supabase = getSupabaseAdmin();
+    // Independent queries — no shared LIMIT that Reserve can monopolize.
+    const [depositResult, withdrawResult, reserveResult] = await Promise.all([
+      fetchWalletRecentCandidates("deposit", token),
+      fetchWalletRecentCandidates("withdraw", token),
+      reserve
+        ? fetchWalletRecentCandidates("reserve", token)
+        : Promise.resolve({ rows: [], found: 0, ge10k: 0 }),
+    ]);
 
-    // Direction filters matching display classification (all three wallets):
-    // Deposit IN | Withdraw OUT | Reserve OUT
-    const directionOr = [
-      `to_address.eq.${deposit}`,
-      `and(from_address.eq.${withdraw},to_address.neq.${withdraw})`,
-      ...(reserve
-        ? [`and(from_address.eq.${reserve},to_address.neq.${reserve})`]
-        : []),
-    ].join(",");
+    const combined = [
+      ...depositResult.rows,
+      ...withdrawResult.rows,
+      ...reserveResult.rows,
+    ];
 
-    let query = supabase
-      .from("transactions")
-      .select(
-        "id, tx_hash, log_index, wallet_address, wallet_type, token_contract, from_address, to_address, amount_raw, amount_usdt, block_number, block_hash, timestamp, status, token_symbol, token_decimals",
-      )
-      .eq("status", "success")
-      .or(directionOr)
-      .order("block_number", { ascending: false })
-      .order("log_index", { ascending: false })
-      .limit(FETCH_BUFFER);
+    const selected = selectLatestCombinedTransactions(combined, RECENT_TX_LIMIT);
 
-    // Filter amount >= 10,000 BEFORE the global LIMIT 10 (applied in selector).
-    query = applyLargeTxMinAmountFilter(query);
-
-    if (token) {
-      query = query.eq("token_contract", token);
+    if (DEBUG_RECENT_TX) {
+      console.info("[api/recent-transactions] diagnostics", {
+        deposit: { found: depositResult.found, ge10k: depositResult.ge10k },
+        withdraw: { found: withdrawResult.found, ge10k: withdrawResult.ge10k },
+        reserve: { found: reserveResult.found, ge10k: reserveResult.ge10k },
+        combined: combined.length,
+        returned: selected.length,
+      });
     }
-
-    const { data, error } = await query;
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    const mapped = ((data ?? []) as DbTxRow[])
-      .map(mapDbRow)
-      .filter((row) =>
-        meetsLargeTxMinUsdt(row.amountUsdt, LARGE_TX_MIN_USDT, {
-          amountRaw: row.amountRaw,
-          tokenDecimals: row.tokenDecimals,
-        }),
-      );
-
-    const selected = selectLatestCombinedTransactions(mapped, RECENT_TX_LIMIT);
 
     const transactions: TransactionRow[] = selected.map((row) => ({
       ...row,
@@ -176,6 +217,7 @@ export async function GET(request: Request) {
             : reserve,
     }));
 
+    const supabase = getSupabaseAdmin();
     const { data: syncRow } = await supabase
       .from("sync_state")
       .select("last_successful_sync")

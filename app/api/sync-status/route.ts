@@ -1,4 +1,5 @@
 import { buildSyncStatusPayload } from "@/lib/api/dashboard-data";
+import { maybeCatchUpSync } from "@/lib/blockchain/catch-up";
 import {
   enforceRateLimit,
   jsonError,
@@ -13,6 +14,7 @@ export async function GET(request: Request) {
   if (!limited.ok) return limited.response;
 
   try {
+    maybeCatchUpSync("sync-status");
     const data = await buildSyncStatusPayload();
     return withRateLimitHeaders(jsonOk(data), limited.result);
   } catch (err) {

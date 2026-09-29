@@ -16,33 +16,60 @@ export const RECENT_TX_LIMIT = 10;
 export const MIN_TRANSACTION_USDT = LARGE_TX_MIN_USDT;
 
 /**
- * Display classification for Recent TX History (address-derived, not labels):
- * - Deposit: to == Deposit Wallet (IN)
- * - Withdraw: from == Withdraw Wallet AND to != Withdraw Wallet (OUT)
- * - Reserve: from == Reserve Fund AND to != Reserve Fund (OUT)
+ * Display classification for Recent TX History (address-derived, not labels).
  *
- * Priority when multiple rules match (e.g. Reserve → Deposit): Deposit, then
- * Withdraw, then Reserve — one badge per combined-list row.
+ * Each configured wallet qualifies on IN or OUT:
+ * - Deposit:  to == Deposit  OR from == Deposit
+ * - Withdraw: to == Withdraw OR from == Withdraw
+ * - Reserve:  to == Reserve  OR from == Reserve
+ *
+ * Self-transfers (from == to == same configured wallet) are excluded.
+ *
+ * When both ends are configured wallets (e.g. Reserve → Withdraw), prefer
+ * Deposit > Withdraw > Reserve so Reserve cannot monopolize dual-role rows.
+ * One badge per combined-list row (dedupe by txHash:logIndex).
  */
 export function classifyRecentTxWallet(
   fromAddress: string,
   toAddress: string,
 ): WalletCardType | null {
-  if (addressesEqual(toAddress, DEPOSIT_WALLET)) {
-    return "deposit";
-  }
+  const fromDeposit = addressesEqual(fromAddress, DEPOSIT_WALLET);
+  const toDeposit = addressesEqual(toAddress, DEPOSIT_WALLET);
+  const fromWithdraw = addressesEqual(fromAddress, WITHDRAW_WALLET);
+  const toWithdraw = addressesEqual(toAddress, WITHDRAW_WALLET);
+  const fromReserve = addressesEqual(fromAddress, RESERVE_FUND_WALLET);
+  const toReserve = addressesEqual(toAddress, RESERVE_FUND_WALLET);
+
+  // Self-transfer on any monitored wallet → exclude from external history
   if (
-    addressesEqual(fromAddress, WITHDRAW_WALLET) &&
-    !addressesEqual(toAddress, WITHDRAW_WALLET)
+    (fromDeposit && toDeposit) ||
+    (fromWithdraw && toWithdraw) ||
+    (fromReserve && toReserve)
   ) {
-    return "withdraw";
+    return null;
   }
-  if (
-    addressesEqual(fromAddress, RESERVE_FUND_WALLET) &&
-    !addressesEqual(toAddress, RESERVE_FUND_WALLET)
-  ) {
-    return "reserve";
-  }
+
+  if (fromDeposit || toDeposit) return "deposit";
+  if (fromWithdraw || toWithdraw) return "withdraw";
+  if (fromReserve || toReserve) return "reserve";
+  return null;
+}
+
+/** IN when to == wallet; OUT when from == wallet (for the classified wallet type). */
+export function classifyRecentTxDirection(
+  fromAddress: string,
+  toAddress: string,
+  walletType: WalletCardType,
+): "IN" | "OUT" | null {
+  const wallet =
+    walletType === "deposit"
+      ? DEPOSIT_WALLET
+      : walletType === "withdraw"
+        ? WITHDRAW_WALLET
+        : RESERVE_FUND_WALLET;
+  if (!wallet) return null;
+  if (addressesEqual(toAddress, wallet)) return "IN";
+  if (addressesEqual(fromAddress, wallet)) return "OUT";
   return null;
 }
 
@@ -163,29 +190,28 @@ export function applyLargeTxMinAmountFilter<
 }
 
 /**
- * Recent Large Transactions wallet direction filters (indexed Transfer rows):
- * - Deposit: to == Deposit Wallet (IN)
- * - Withdraw: from == Withdraw Wallet AND to != Withdraw Wallet (OUT)
- * - Reserve: from == Reserve Fund Wallet AND to != Reserve Fund Wallet (OUT)
- *   — same outbound semantics as Withdraw; Reserve is not part of daily
- *   IN-only analytics, but indexed Transfer rows still record when the
- *   reserve address is the sender (e.g. funding the withdraw wallet).
+ * Recent TX / Large TX wallet filters — IN and OUT for every configured wallet:
+ * - Deposit:  (to == Deposit  AND from != Deposit)  OR (from == Deposit  AND to != Deposit)
+ * - Withdraw: (to == Withdraw AND from != Withdraw) OR (from == Withdraw AND to != Withdraw)
+ * - Reserve:  (to == Reserve  AND from != Reserve)  OR (from == Reserve  AND to != Reserve)
+ *
+ * Self-transfers are excluded. Daily analytics remain IN-only elsewhere.
  */
 export function applyLargeTxWalletFilter<
   T extends {
     eq: (col: string, val: string) => T;
     neq: (col: string, val: string) => T;
+    or: (filters: string) => T;
   },
 >(query: T, walletType: WalletCardType): T {
-  if (walletType === "deposit") {
-    return query.eq("to_address", normalizeAddress(DEPOSIT_WALLET));
-  }
-  if (walletType === "withdraw") {
-    return query
-      .eq("from_address", normalizeAddress(WITHDRAW_WALLET))
-      .neq("to_address", normalizeAddress(WITHDRAW_WALLET));
-  }
-  return query
-    .eq("from_address", normalizeAddress(RESERVE_FUND_WALLET))
-    .neq("to_address", normalizeAddress(RESERVE_FUND_WALLET));
+  const addr = normalizeAddress(
+    walletType === "deposit"
+      ? DEPOSIT_WALLET
+      : walletType === "withdraw"
+        ? WITHDRAW_WALLET
+        : RESERVE_FUND_WALLET,
+  );
+  return query.or(
+    `and(to_address.eq.${addr},from_address.neq.${addr}),and(from_address.eq.${addr},to_address.neq.${addr})`,
+  );
 }

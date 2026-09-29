@@ -40,16 +40,14 @@ export function classifyTransfer(
 /**
  * Roles to index for a USDT Transfer.
  *
- * Daily Analytics (IN only):
- * - to == Deposit Wallet → deposit
- * - to == Withdraw Wallet → withdraw
+ * All three wallets are monitored independently for IN and OUT:
+ * - to == wallet  → IN role
+ * - from == wallet (and to != wallet) → OUT role
  *
- * Additional indexing (history / Recent TX):
- * - from == Withdraw Wallet (OUT)
- * - from == Reserve Fund (OUT) — same outbound semantics as display classification
+ * Self-transfers (from == to == same wallet) produce no roles.
  *
- * Withdraw / Reserve OUT are indexed, but aggregation only counts rows where
- * to_address matches deposit/withdraw (IN). Deposit Wallet OUT is never indexed.
+ * Daily analytics still counts only Deposit/Withdraw IN (to == wallet);
+ * OUT rows are stored for Recent TX History but ignored by aggregation.
  */
 export function classifyIndexedTransferRoles(
   fromAddress: string,
@@ -60,26 +58,51 @@ export function classifyIndexedTransferRoles(
   const withdraw = normalizeAddress(WITHDRAW_WALLET);
   const reserve = normalizeAddress(RESERVE_FUND_WALLET);
 
-  if (addressesEqual(toAddress, DEPOSIT_WALLET)) {
-    roles.push({ walletType: "deposit", walletAddress: deposit });
-  }
-  if (addressesEqual(toAddress, WITHDRAW_WALLET)) {
-    roles.push({ walletType: "withdraw", walletAddress: withdraw });
-  }
-  // Withdraw Wallet OUT (stored; daily analytics ignores OUT)
+  const pushRole = (walletType: WalletType, walletAddress: string) => {
+    if (!roles.some((r) => r.walletType === walletType)) {
+      roles.push({ walletType, walletAddress });
+    }
+  };
+
+  // Deposit IN / OUT (exclude self-transfers)
   if (
+    addressesEqual(toAddress, DEPOSIT_WALLET) &&
+    !addressesEqual(fromAddress, DEPOSIT_WALLET)
+  ) {
+    pushRole("deposit", deposit);
+  } else if (
+    addressesEqual(fromAddress, DEPOSIT_WALLET) &&
+    !addressesEqual(toAddress, DEPOSIT_WALLET)
+  ) {
+    pushRole("deposit", deposit);
+  }
+
+  // Withdraw IN / OUT (exclude self-transfers)
+  if (
+    addressesEqual(toAddress, WITHDRAW_WALLET) &&
+    !addressesEqual(fromAddress, WITHDRAW_WALLET)
+  ) {
+    pushRole("withdraw", withdraw);
+  } else if (
     addressesEqual(fromAddress, WITHDRAW_WALLET) &&
     !addressesEqual(toAddress, WITHDRAW_WALLET)
   ) {
-    roles.push({ walletType: "withdraw", walletAddress: withdraw });
+    pushRole("withdraw", withdraw);
   }
-  // Reserve Fund OUT (Recent TX History; daily analytics ignores)
-  if (
-    reserve &&
-    addressesEqual(fromAddress, RESERVE_FUND_WALLET) &&
-    !addressesEqual(toAddress, RESERVE_FUND_WALLET)
-  ) {
-    roles.push({ walletType: "reserve", walletAddress: reserve });
+
+  // Reserve IN / OUT (exclude self-transfers)
+  if (reserve) {
+    if (
+      addressesEqual(toAddress, RESERVE_FUND_WALLET) &&
+      !addressesEqual(fromAddress, RESERVE_FUND_WALLET)
+    ) {
+      pushRole("reserve", reserve);
+    } else if (
+      addressesEqual(fromAddress, RESERVE_FUND_WALLET) &&
+      !addressesEqual(toAddress, RESERVE_FUND_WALLET)
+    ) {
+      pushRole("reserve", reserve);
+    }
   }
 
   return roles;

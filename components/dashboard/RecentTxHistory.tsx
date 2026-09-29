@@ -16,6 +16,7 @@ import { formatUsdtExact } from "@/lib/utils/format";
 import { LARGE_TX_MIN_USDT, explorerTxUrl } from "@/lib/config";
 import {
   RECENT_TX_LIMIT,
+  classifyRecentTxDirection,
   meetsLargeTxMinUsdt,
   selectLatestCombinedTransactions,
 } from "@/lib/analytics/filters";
@@ -89,7 +90,9 @@ export function RecentTxHistory({
 
   const liveStatus = data?.liveStatus ?? "STALE";
 
-  // Defensive client filter — API already enforces >= 10,000 + limit 10.
+  // Defensive client pass — API already queries all 3 wallets, filters >= 10k,
+  // combines, dedupes, sorts newest-first, and caps at 10. Do not filter by
+  // walletType here (must keep Deposit + Withdraw + Reserve).
   const txs = useMemo(() => {
     const rows = data?.transactions ?? [];
     const filtered = rows.filter((tx) =>
@@ -215,6 +218,9 @@ function LiveStatusPill({
 
 function TxCard({ tx, index }: { tx: TransactionRow; index: number }) {
   const theme = THEME[tx.walletType] ?? THEME.deposit;
+  const direction =
+    classifyRecentTxDirection(tx.fromAddress, tx.toAddress, tx.walletType) ??
+    "OUT";
 
   return (
     <div className="w-full max-w-full rounded-xl border border-[var(--tn-border)] bg-[var(--tn-surface-2)]/70 p-3 sm:p-3.5">
@@ -237,7 +243,7 @@ function TxCard({ tx, index }: { tx: TransactionRow; index: number }) {
                 ) : (
                   <WalletMini />
                 )}
-                {theme.label}
+                {theme.label} • {direction}
               </span>
               <p className="mt-1.5 text-xs leading-snug text-[var(--tn-muted)]">
                 <span className="block text-[var(--tn-text)]">

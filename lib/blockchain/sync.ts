@@ -152,12 +152,12 @@ async function ensureWalletsSeeded(tokenContract: string, chainId: number) {
   }
 }
 
-function toDbRow(t: ValidatedTransfer) {
+function toDbRow(t: ValidatedTransfer, walletTypeOverride?: string) {
   return {
     tx_hash: t.txHash,
     log_index: t.logIndex,
     wallet_address: t.walletAddress,
-    wallet_type: t.walletType,
+    wallet_type: walletTypeOverride ?? t.walletType,
     token_contract: t.tokenContract,
     from_address: t.fromAddress,
     to_address: t.toAddress,
@@ -187,7 +187,7 @@ async function upsertTransfers(
   const chunkSize = 100;
   for (let i = 0; i < transfers.length; i += chunkSize) {
     const chunk = transfers.slice(i, i + chunkSize);
-    const rows = chunk.map(toDbRow);
+    let rows = chunk.map((t) => toDbRow(t));
 
     const hashes = chunk.map((t) => t.txHash);
     const { data: existing } = await supabase
@@ -211,10 +211,69 @@ async function upsertTransfers(
       }
     }
 
-    const { error } = await supabase.from("transactions").upsert(rows, {
+    let { error } = await supabase.from("transactions").upsert(rows, {
       onConflict: "tx_hash,log_index,wallet_address",
       ignoreDuplicates: false,
     });
+
+    // Pre-migration DBs only allow deposit|withdraw — store Reserve OUT as
+    // wallet_type=withdraw with wallet_address=reserve (display uses from/to).
+    if (
+      error &&
+      /wallet_type|check constraint/i.test(error.message) &&
+      rows.some((r) => r.wallet_type === "reserve")
+    ) {
+      rows = chunk.map((t) =>
+        toDbRow(t, t.walletType === "reserve" ? "withdraw" : undefined),
+      );
+      const retry = await supabase.from("transactions").upsert(rows, {
+        onConflict: "tx_hash,log_index,wallet_address",
+        ignoreDuplicates: false,
+      });
+      error = retry.error;
+      if (!error) {
+        console.warn(
+          "[sync] Stored Reserve OUT with wallet_type=withdraw fallback — apply migration 20260929120000_allow_reserve_wallet_type.sql",
+        );
+      }
+    }
+
+    // If a mixed chunk still fails, upsert non-reserve then reserve-fallback
+    // separately so Deposit/Withdraw rows are never dropped with Reserve.
+    if (error && chunk.some((t) => t.walletType === "reserve")) {
+      const nonReserve = chunk.filter((t) => t.walletType !== "reserve");
+      const reserveOnly = chunk.filter((t) => t.walletType === "reserve");
+      if (nonReserve.length > 0) {
+        const a = await supabase.from("transactions").upsert(
+          nonReserve.map((t) => toDbRow(t)),
+          {
+            onConflict: "tx_hash,log_index,wallet_address",
+            ignoreDuplicates: false,
+          },
+        );
+        if (a.error) {
+          throw new Error(`Failed to upsert transactions: ${a.error.message}`);
+        }
+      }
+      if (reserveOnly.length > 0) {
+        const b = await supabase.from("transactions").upsert(
+          reserveOnly.map((t) => toDbRow(t, "withdraw")),
+          {
+            onConflict: "tx_hash,log_index,wallet_address",
+            ignoreDuplicates: false,
+          },
+        );
+        if (b.error) {
+          throw new Error(
+            `Failed to upsert reserve transactions: ${b.error.message}`,
+          );
+        }
+        console.warn(
+          "[sync] Split-upserted Reserve OUT with wallet_type=withdraw fallback",
+        );
+      }
+      error = null;
+    }
 
     if (error) {
       throw new Error(`Failed to upsert transactions: ${error.message}`);

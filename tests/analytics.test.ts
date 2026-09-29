@@ -21,6 +21,7 @@ import {
   meetsLargeTxMinUsdt,
   applyLargeTxWalletFilter,
   classifyRecentTxWallet,
+  classifyRecentTxDirection,
   selectLatestCombinedTransactions,
   RECENT_TX_LIMIT,
 } from "@/lib/analytics/filters";
@@ -303,56 +304,65 @@ describe("min display USDT constant", () => {
 });
 
 describe("large-tx wallet direction filters", () => {
-  it("filters deposit as IN to deposit wallet", () => {
-    const calls: Array<[string, string]> = [];
+  it("filters deposit as IN or OUT involving deposit wallet", () => {
+    const ors: string[] = [];
     const q = {
-      eq(col: string, val: string) {
-        calls.push([col, val]);
+      eq() {
         return this;
       },
       neq() {
         return this;
       },
-    };
-    applyLargeTxWalletFilter(q, "deposit");
-    expect(calls).toEqual([["to_address", normalizeAddress(DEPOSIT)]]);
-  });
-
-  it("filters withdraw as OUT from withdraw wallet", () => {
-    const eqs: Array<[string, string]> = [];
-    const neqs: Array<[string, string]> = [];
-    const q = {
-      eq(col: string, val: string) {
-        eqs.push([col, val]);
+      or(filters: string) {
+        ors.push(filters);
         return this;
       },
-      neq(col: string, val: string) {
-        neqs.push([col, val]);
+    };
+    applyLargeTxWalletFilter(q, "deposit");
+    expect(ors).toHaveLength(1);
+    expect(ors[0]).toContain(`to_address.eq.${normalizeAddress(DEPOSIT)}`);
+    expect(ors[0]).toContain(`from_address.eq.${normalizeAddress(DEPOSIT)}`);
+  });
+
+  it("filters withdraw as IN or OUT involving withdraw wallet", () => {
+    const ors: string[] = [];
+    const q = {
+      eq() {
+        return this;
+      },
+      neq() {
+        return this;
+      },
+      or(filters: string) {
+        ors.push(filters);
         return this;
       },
     };
     applyLargeTxWalletFilter(q, "withdraw");
-    expect(eqs).toEqual([["from_address", normalizeAddress(WITHDRAW)]]);
-    expect(neqs).toEqual([["to_address", normalizeAddress(WITHDRAW)]]);
+    expect(ors).toHaveLength(1);
+    expect(ors[0]).toContain(`to_address.eq.${normalizeAddress(WITHDRAW)}`);
+    expect(ors[0]).toContain(`from_address.eq.${normalizeAddress(WITHDRAW)}`);
   });
 
-  it("filters reserve as OUT from reserve fund wallet", () => {
+  it("filters reserve as IN or OUT involving reserve fund wallet", () => {
     const reserve = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
-    const eqs: Array<[string, string]> = [];
-    const neqs: Array<[string, string]> = [];
+    const ors: string[] = [];
     const q = {
-      eq(col: string, val: string) {
-        eqs.push([col, val]);
+      eq() {
         return this;
       },
-      neq(col: string, val: string) {
-        neqs.push([col, val]);
+      neq() {
+        return this;
+      },
+      or(filters: string) {
+        ors.push(filters);
         return this;
       },
     };
     applyLargeTxWalletFilter(q, "reserve");
-    expect(eqs).toEqual([["from_address", normalizeAddress(reserve)]]);
-    expect(neqs).toEqual([["to_address", normalizeAddress(reserve)]]);
+    expect(ors).toHaveLength(1);
+    expect(ors[0]).toContain(`to_address.eq.${normalizeAddress(reserve)}`);
+    expect(ors[0]).toContain(`from_address.eq.${normalizeAddress(reserve)}`);
   });
 });
 
@@ -477,12 +487,30 @@ describe("transfer indexing roles", () => {
     ]);
   });
 
-  it("does not index Deposit Wallet OUT", () => {
+  it("indexes Deposit Wallet OUT as deposit", () => {
     const roles = classifyIndexedTransferRoles(
       DEPOSIT,
       "0x2222222222222222222222222222222222222222",
     );
-    expect(roles).toEqual([]);
+    expect(roles).toEqual([
+      { walletType: "deposit", walletAddress: DEPOSIT.toLowerCase() },
+    ]);
+  });
+
+  it("indexes Reserve Fund IN as reserve", () => {
+    const reserve = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
+    const roles = classifyIndexedTransferRoles(
+      "0x2222222222222222222222222222222222222222",
+      reserve,
+    );
+    expect(roles).toEqual([
+      { walletType: "reserve", walletAddress: reserve.toLowerCase() },
+    ]);
+  });
+
+  it("does not index self-transfers", () => {
+    expect(classifyIndexedTransferRoles(DEPOSIT, DEPOSIT)).toEqual([]);
+    expect(classifyIndexedTransferRoles(WITHDRAW, WITHDRAW)).toEqual([]);
   });
 
   it("indexes Withdraw→Deposit as both deposit IN and withdraw OUT", () => {
@@ -573,16 +601,31 @@ describe("transfer validation", () => {
     expect(result).toBeNull();
   });
 
-  it("rejects transfers whose to is not a tracked wallet (deposit OUT path)", () => {
+  it("rejects transfers whose from/to are not tracked wallets", () => {
     const result = validateTokenTransfer(
       {
         ...baseTx,
-        from: DEPOSIT,
+        from: "0x00000000000000000000000000000000000000aa",
         to: "0x00000000000000000000000000000000000000bb",
       },
       18,
     );
     expect(result).toBeNull();
+  });
+
+  it("indexes Deposit Wallet OUT", () => {
+    const results = validateTokenTransfers(
+      {
+        ...baseTx,
+        from: DEPOSIT,
+        to: "0x00000000000000000000000000000000000000bb",
+        value: "50000000000000000000",
+      },
+      18,
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]?.walletType).toBe("deposit");
+    expect(results[0]?.fromAddress).toBe(DEPOSIT.toLowerCase());
   });
 
   it("indexes Withdraw Wallet OUT", () => {
@@ -617,16 +660,33 @@ describe("recent TX classification + latest-10 combined", () => {
   const RESERVE = "0xe1ce23017882f3630e2B5dC4f2Fb3f33947E5904";
   const EXTERNAL = "0x2222222222222222222222222222222222222222";
 
-  it("classifies Deposit IN, Withdraw OUT, Reserve OUT", () => {
+  it("classifies IN and OUT for all three wallets", () => {
     expect(classifyRecentTxWallet(EXTERNAL, DEPOSIT)).toBe("deposit");
+    expect(classifyRecentTxWallet(DEPOSIT, EXTERNAL)).toBe("deposit");
+    expect(classifyRecentTxWallet(EXTERNAL, WITHDRAW)).toBe("withdraw");
     expect(classifyRecentTxWallet(WITHDRAW, EXTERNAL)).toBe("withdraw");
+    expect(classifyRecentTxWallet(EXTERNAL, RESERVE)).toBe("reserve");
     expect(classifyRecentTxWallet(RESERVE, EXTERNAL)).toBe("reserve");
-    expect(classifyRecentTxWallet(EXTERNAL, WITHDRAW)).toBeNull();
-    expect(classifyRecentTxWallet(DEPOSIT, EXTERNAL)).toBeNull();
+    expect(classifyRecentTxWallet(EXTERNAL, EXTERNAL)).toBeNull();
   });
 
-  it("prefers Deposit when Withdraw → Deposit matches both rules", () => {
+  it("excludes self-transfers", () => {
+    expect(classifyRecentTxWallet(DEPOSIT, DEPOSIT)).toBeNull();
+    expect(classifyRecentTxWallet(WITHDRAW, WITHDRAW)).toBeNull();
+    expect(classifyRecentTxWallet(RESERVE, RESERVE)).toBeNull();
+  });
+
+  it("prefers Deposit > Withdraw > Reserve for dual-wallet transfers", () => {
     expect(classifyRecentTxWallet(WITHDRAW, DEPOSIT)).toBe("deposit");
+    expect(classifyRecentTxWallet(RESERVE, WITHDRAW)).toBe("withdraw");
+    expect(classifyRecentTxWallet(RESERVE, DEPOSIT)).toBe("deposit");
+  });
+
+  it("resolves IN/OUT from Transfer from/to vs classified wallet", () => {
+    expect(classifyRecentTxDirection(EXTERNAL, DEPOSIT, "deposit")).toBe("IN");
+    expect(classifyRecentTxDirection(DEPOSIT, EXTERNAL, "deposit")).toBe("OUT");
+    expect(classifyRecentTxDirection(RESERVE, WITHDRAW, "withdraw")).toBe("IN");
+    expect(classifyRecentTxDirection(RESERVE, WITHDRAW, "reserve")).toBe("OUT");
   });
 
   it("returns a global newest-first list capped at 10 (not per wallet)", () => {

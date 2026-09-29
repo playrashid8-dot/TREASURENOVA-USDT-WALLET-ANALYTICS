@@ -292,25 +292,38 @@ async function fetchSqdPage(
       transaction: { status: true, hash: true },
     },
     logs: [
+      // Deposit Wallet IN
       {
         address: [normalizeAddress(token)],
         topic0: [TRANSFER_EVENT_TOPIC],
         topic2: [topicAddress(DEPOSIT_WALLET)],
       },
+      // Deposit Wallet OUT
+      {
+        address: [normalizeAddress(token)],
+        topic0: [TRANSFER_EVENT_TOPIC],
+        topic1: [topicAddress(DEPOSIT_WALLET)],
+      },
+      // Withdraw Wallet IN
       {
         address: [normalizeAddress(token)],
         topic0: [TRANSFER_EVENT_TOPIC],
         topic2: [topicAddress(WITHDRAW_WALLET)],
       },
-      // Withdraw Wallet OUT — indexed; daily analytics ignores OUT
+      // Withdraw Wallet OUT
       {
         address: [normalizeAddress(token)],
         topic0: [TRANSFER_EVENT_TOPIC],
         topic1: [topicAddress(WITHDRAW_WALLET)],
       },
-      // Reserve Fund OUT — Recent TX History; daily analytics ignores OUT
+      // Reserve Fund IN + OUT
       ...(isAddress(RESERVE_FUND_WALLET)
         ? [
+            {
+              address: [normalizeAddress(token)],
+              topic0: [TRANSFER_EVENT_TOPIC],
+              topic2: [topicAddress(RESERVE_FUND_WALLET)],
+            },
             {
               address: [normalizeAddress(token)],
               topic0: [TRANSFER_EVENT_TOPIC],
@@ -806,12 +819,14 @@ async function scanViaRpc(options: {
   onChunkComplete?: (chunk: ScanChunkComplete) => Promise<void>;
 }): Promise<{ lastScannedBlock: number; errors: string[] }> {
   const errors: string[] = [];
-  const toAddresses = [DEPOSIT_WALLET, WITHDRAW_WALLET].filter((a) =>
-    isAddress(a),
+  const toAddresses = [DEPOSIT_WALLET, WITHDRAW_WALLET, RESERVE_FUND_WALLET].filter(
+    (a) => isAddress(a),
   );
-  const fromAddresses = [WITHDRAW_WALLET, RESERVE_FUND_WALLET].filter((a) =>
-    isAddress(a),
-  );
+  const fromAddresses = [
+    DEPOSIT_WALLET,
+    WITHDRAW_WALLET,
+    RESERVE_FUND_WALLET,
+  ].filter((a) => isAddress(a));
 
   let cursor = Math.max(0, options.startBlock);
   const endBlock = Math.max(cursor, options.endBlock);
