@@ -2,13 +2,17 @@ import { runSync } from "@/lib/blockchain/sync";
 import { SYNC_KEY } from "@/lib/config";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import { getLatestBlockNumber } from "@/lib/blockchain/rpc";
-import { FAST_INCREMENTAL_MAX_LAG } from "@/lib/blockchain/sync-plan";
+import {
+  FAST_INCREMENTAL_MAX_LAG,
+  REQUEST_BACKFILL_BLOCKS,
+} from "@/lib/blockchain/sync-plan";
 
 /**
  * Bring Recent TX in line with the BSC head.
  * Small gaps are scanned contiguously and checkpointed before the API reads.
- * Large gaps only refresh the chain tip (no checkpoint jump); the scheduled
- * incremental sync walks the missing range in bounded chunks.
+ * Large gaps refresh the chain tip (no checkpoint jump) and also walk a
+ * bounded contiguous chunk so last_indexed_block actually advances.
+ * A daily cron cannot close a multi-hundred-thousand block gap by itself.
  */
 export async function ensureFreshIncrementalSync(
   reason = "api",
@@ -57,11 +61,21 @@ export async function ensureFreshIncrementalSync(
     }
 
     console.info(
-      `[catch-up] tip refresh (${reason}) lag=${lag} indexed=${indexed} head=${latest}`,
+      `[catch-up] tip plus backfill (${reason}) lag=${lag} indexed=${indexed} head=${latest}`,
     );
-    const result = await runSync({ mode: "tip" });
+    const tip = await runSync({ mode: "tip" });
     console.info(
-      `[catch-up] tip done ok=${result.ok} inserted=${result.inserted} checkpoint=${result.lastIndexedBlock}`,
+      `[catch-up] tip done ok=${tip.ok} busy=${Boolean(tip.busy)} inserted=${tip.inserted} checkpoint=${tip.lastIndexedBlock}`,
+    );
+    if (tip.busy) {
+      return { ran: false, lag, mode: "tip" };
+    }
+    const backfill = await runSync({
+      mode: "incremental",
+      maxBlocksPerRun: REQUEST_BACKFILL_BLOCKS,
+    });
+    console.info(
+      `[catch-up] backfill done ok=${backfill.ok} busy=${Boolean(backfill.busy)} inserted=${backfill.inserted} checkpoint=${backfill.lastIndexedBlock}`,
     );
     return { ran: true, lag, mode: "tip" };
   } catch (err) {

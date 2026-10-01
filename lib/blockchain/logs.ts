@@ -87,8 +87,23 @@ function topicAddress(address: string): string {
   );
 }
 
+/**
+ * Some BSC nodes answer eth_blockNumber a few blocks ahead of eth_getLogs.
+ * That is not a "range too large" failure and must not shrink the chunk to 1.
+ * Returns the node's getLogs head when the message includes it.
+ */
+export function parseBeyondHeadBlock(message: string): number | null {
+  const match = message.match(
+    /beyond current head block:[\s\S]*?head\s+(\d+)/i,
+  );
+  if (!match) return null;
+  const head = Number(match[1]);
+  return Number.isFinite(head) ? head : null;
+}
+
 function isRangeTooLargeError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (msg.includes("beyond current head")) return false;
   return (
     msg.includes("query returned more than") ||
     msg.includes("too many results") ||
@@ -98,8 +113,7 @@ function isRangeTooLargeError(err: unknown): boolean {
     msg.includes("exceeded maximum") ||
     msg.includes("block range exceeds") ||
     msg.includes("limit exceeded") ||
-    msg.includes("-32005") ||
-    msg.includes("-32602")
+    msg.includes("-32005")
   );
 }
 
@@ -894,7 +908,7 @@ async function scanViaRpc(options: {
   ].filter((a) => isAddress(a));
 
   let cursor = Math.max(0, options.startBlock);
-  const endBlock = Math.max(cursor, options.endBlock);
+  let endBlock = Math.max(cursor, options.endBlock);
   let preferredChunk = Math.min(LOG_SCAN_CHUNK_SIZE, 9_999);
   let lastScannedBlock = Math.max(0, cursor - 1);
   let cursorRetries = 0;
@@ -965,6 +979,15 @@ async function scanViaRpc(options: {
       cursor = scannedTo + 1;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const headLimit = parseBeyondHeadBlock(msg);
+      if (headLimit != null && headLimit >= cursor && headLimit < endBlock) {
+        console.warn(
+          `[logs] eth_getLogs head is ${headLimit}, clamping scan end from ${endBlock}`,
+        );
+        endBlock = headLimit;
+        continue;
+      }
+
       errors.push(`RPC blocks ${cursor}–${endBlock}: ${msg}`);
       console.warn(`[logs] RPC scan stopped at block ${cursor}: ${msg.slice(0, 200)}`);
 

@@ -426,7 +426,7 @@ export async function runSync(options?: {
       };
     }
 
-    if (plan.checkpointAllowed) {
+    {
       const lease = await acquireSyncLease();
       if (!lease.acquired) {
         console.log("[sync] Lease held by another worker; skipping");
@@ -550,6 +550,19 @@ export async function runSync(options?: {
         status: scanComplete ? "synced" : "error",
         last_indexed_block: indexedBlock,
         last_successful_sync: scanComplete ? new Date().toISOString() : undefined,
+        last_error: scan.errors.length
+          ? scan.errors.slice(0, 5).join("; ")
+          : null,
+      });
+    } else if (leaseHeld) {
+      // Tip refresh must not jump the contiguous cursor, but it must release
+      // the lease and record that a scan actually finished. Otherwise the
+      // dashboard keeps a multi-day last_successful_sync while the head moves.
+      await upsertSyncState({
+        status: "synced",
+        last_successful_sync: scanComplete
+          ? new Date().toISOString()
+          : undefined,
         last_error: scan.errors.length
           ? scan.errors.slice(0, 5).join("; ")
           : null,

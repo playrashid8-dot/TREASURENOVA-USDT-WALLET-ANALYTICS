@@ -4,8 +4,9 @@ import {
   planSyncWindow,
   resolveNextCheckpoint,
   FAST_INCREMENTAL_MAX_LAG,
+  REQUEST_BACKFILL_BLOCKS,
 } from "@/lib/blockchain/sync-plan";
-import { buildValidatedTransfers } from "@/lib/blockchain/logs";
+import { buildValidatedTransfers, parseBeyondHeadBlock } from "@/lib/blockchain/logs";
 import {
   selectLatestCombinedTransactions,
   selectRecentTxFeed,
@@ -65,6 +66,40 @@ describe("incremental sync planning", () => {
     expect(plan.endBlock - plan.startBlock).toBeLessThan(FAST_INCREMENTAL_MAX_LAG);
     expect(plan.startBlock).toBe(995);
     expect(plan.endBlock).toBe(1_003);
+  });
+
+  it("still plans a bounded contiguous backfill when the head is far ahead", () => {
+    const plan = planSyncWindow({
+      lastIndexedBlock: 124_685_028,
+      latestBlock: 125_011_458,
+      mode: "incremental",
+      maxBlocksPerRun: REQUEST_BACKFILL_BLOCKS,
+      syncStartBlock: 1,
+    });
+    expect(plan.shouldRun).toBe(true);
+    expect(plan.checkpointAllowed).toBe(true);
+    expect(plan.endBlock - plan.startBlock + 1).toBeLessThanOrEqual(
+      REQUEST_BACKFILL_BLOCKS + 5,
+    );
+    expect(plan.startBlock).toBe(124_685_028 - 5);
+    const next = resolveNextCheckpoint({
+      stored: 124_685_028,
+      startBlock: plan.startBlock,
+      endBlock: plan.endBlock,
+      lastSuccessfulChunk: plan.endBlock,
+      scanComplete: true,
+      checkpointAllowed: plan.checkpointAllowed,
+    });
+    expect(next).toBe(plan.endBlock);
+    expect(next).toBeGreaterThan(124_685_028);
+    expect(next).toBeLessThan(125_011_458);
+  });
+
+  it("clamps a beyond-head RPC error to the node head instead of treating it as an oversized range", () => {
+    const message =
+      'could not coalesce error (error={ "code": -32602, "message": "block range extends beyond current head block: requested 125011129, head 125011127" }, payload={ "id": 441, "jsonrpc": "2.0", "method": "eth_getLogs" })';
+    expect(parseBeyondHeadBlock(message)).toBe(125_011_127);
+    expect(parseBeyondHeadBlock("query returned more than 10000 results")).toBeNull();
   });
 
   it("does not scan when the checkpoint is already at the head", () => {

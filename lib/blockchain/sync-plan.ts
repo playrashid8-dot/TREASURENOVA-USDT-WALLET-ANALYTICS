@@ -14,6 +14,13 @@ export const TIP_SCAN_BLOCKS = 48;
 /** Contiguous catch-up budget per invocation so a killed worker can resume. */
 export const DEFAULT_BLOCKS_PER_RUN = 2_000;
 
+/**
+ * Blocks the Recent TX request walks forward from the checkpoint when the
+ * gap is larger than a fast incremental sync. The tip is scanned separately
+ * so new transfers are not stuck behind this backfill.
+ */
+export const REQUEST_BACKFILL_BLOCKS = 2_000;
+
 /** Lease expires so a crashed serverless invocation cannot block sync forever. */
 export const SYNC_LEASE_TTL_SECONDS = 120;
 

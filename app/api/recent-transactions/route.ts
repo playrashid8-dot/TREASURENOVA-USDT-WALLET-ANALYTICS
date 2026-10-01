@@ -154,8 +154,8 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Fast path: index the missing head before reading, so a new confirmed
-    // transfer is in this response. Large historical gaps only refresh the tip.
+    // Index the tip, then a bounded contiguous chunk, before reading.
+    // A large gap must not leave last_indexed_block frozen.
     await ensureFreshIncrementalSync("recent-transactions");
 
     const sync = await buildSyncStatusPayload();
