@@ -187,12 +187,12 @@ describe("recent tx feed", () => {
     tokenDecimals: 18,
   });
 
-  it("keeps 5000 and 9999 USDT transfers in the main feed", () => {
+  it("hides transfers under 10000 USDT and keeps 10000", () => {
     const selected = selectRecentTxFeed(
       [row(5_000, 10, 0, "deposit"), row(9_999, 11, 0, "withdraw"), row(10_000, 9, 0, "deposit")],
       10,
     );
-    expect(selected.map((t) => t.amountUsdt)).toEqual([9_999, 5_000, 10_000]);
+    expect(selected.map((t) => t.amountUsdt)).toEqual([10_000]);
   });
 
   it("still applies the large-tx floor only on the large-tx selector", () => {
@@ -207,9 +207,9 @@ describe("recent tx feed", () => {
   it("orders newest block then log index first", () => {
     const selected = selectRecentTxFeed(
       [
-        row(100, 5, 2, "deposit"),
-        row(100, 7, 0, "withdraw"),
-        row(100, 7, 3, "deposit"),
+        row(10_000, 5, 2, "deposit"),
+        row(12_000, 7, 0, "withdraw"),
+        row(11_000, 7, 3, "deposit"),
       ],
       10,
     );

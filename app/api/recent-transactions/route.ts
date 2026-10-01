@@ -8,7 +8,8 @@ import {
 } from "@/lib/config";
 import {
   RECENT_TX_LIMIT,
-  applyLargeTxWalletFilter,
+  applyRecentTxQuery,
+  recentTxAmountMeetsMinimum,
   selectRecentTxFeed,
 } from "@/lib/analytics/filters";
 import { recentTxCacheHeaders } from "@/lib/analytics/recent-refresh";
@@ -88,8 +89,9 @@ function mapDbRow(r: DbTxRow): Omit<TransactionRow, "walletType"> & {
 
 /**
  * Fetch qualifying rows for one wallet independently (IN + OUT).
- * Filter order: success → USDT token → wallet IN|OUT → newest first →
- * per-wallet buffer (never global LIMIT 10 here). No large-tx minimum.
+ * Filter order: success → USDT token → amount >= 10000 → wallet IN|OUT →
+ * newest first → per-wallet buffer (never global LIMIT 10 here).
+ * Final global cap is RECENT_TX_LIMIT after merge.
  */
 async function fetchWalletRecentCandidates(
   walletType: WalletCardType,
@@ -112,7 +114,7 @@ async function fetchWalletRecentCandidates(
     query = query.eq("token_contract", token);
   }
 
-  query = applyLargeTxWalletFilter(query, walletType);
+  query = applyRecentTxQuery(query, walletType);
 
   const { data, error, count } = await query;
   if (error) {
@@ -121,7 +123,7 @@ async function fetchWalletRecentCandidates(
 
   const mapped = ((data ?? []) as DbTxRow[])
     .map(mapDbRow)
-    .filter((row) => Number.isFinite(row.amountUsdt) && row.amountUsdt > 0);
+    .filter((row) => recentTxAmountMeetsMinimum(row.amountUsdt));
 
   return {
     rows: mapped,

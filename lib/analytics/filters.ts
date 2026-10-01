@@ -13,10 +13,20 @@ import type { DateRange, WalletCardType } from "@/types/analytics";
 export const RECENT_TX_LIMIT = 10;
 
 /**
+ * Recent TX History amount floor. 9,999 USDT is hidden; 10,000 USDT is shown.
+ * Applied on the Recent TX database query, not only in the React list.
+ */
+export const RECENT_TX_MIN_USDT = 10_000;
+
+/**
  * Floor for the separate Recent Large Transactions section only.
- * The main Recent TX History feed does not use this minimum.
  */
 export const MIN_TRANSACTION_USDT = LARGE_TX_MIN_USDT;
+
+/** True when amount_usdt meets the Recent TX query floor (inclusive). */
+export function recentTxAmountMeetsMinimum(amountUsdt: number): boolean {
+  return Number.isFinite(amountUsdt) && amountUsdt >= RECENT_TX_MIN_USDT;
+}
 
 /**
  * Display classification for Recent TX History (address-derived, not labels).
@@ -86,15 +96,10 @@ export function qualifiesForRecentTxHistory(
 ): boolean {
   if (classifyRecentTxWallet(fromAddress, toAddress) == null) return false;
   if (amountUsdt === undefined && amountRaw === undefined) return true;
-  // Main feed shows every positive USDT transfer. The 10k floor is only
-  // for the explicit large-transactions section.
   if (amountRaw !== undefined && tokenDecimals !== undefined) {
-    return meetsLargeTxMinUsdt(amountUsdt ?? 0, 0, {
-      amountRaw,
-      tokenDecimals,
-    }) && (amountUsdt ?? 0) > 0;
+    return rawMeetsMinUsdt(amountRaw, tokenDecimals, RECENT_TX_MIN_USDT);
   }
-  return Number.isFinite(amountUsdt) && (amountUsdt ?? 0) > 0;
+  return recentTxAmountMeetsMinimum(amountUsdt ?? Number.NaN);
 }
 
 /**
@@ -150,8 +155,9 @@ export function selectLatestCombinedTransactions<
 }
 
 /**
- * Main Recent TX feed: all qualifying USDT transfers, newest first.
- * Does NOT apply LARGE_TX_MIN_USDT (that floor stays on the large-tx section).
+ * Main Recent TX feed: monitored-wallet transfers at or above
+ * RECENT_TX_MIN_USDT, newest first, capped at RECENT_TX_LIMIT.
+ * The database query applies the same amount floor before this merge.
  */
 export function selectRecentTxFeed<
   T extends {
@@ -173,7 +179,7 @@ export function selectRecentTxFeed<
   for (const row of rows) {
     const key = `${row.txHash}:${row.logIndex}`;
     if (seen.has(key)) continue;
-    if (!Number.isFinite(row.amountUsdt) || row.amountUsdt <= 0) continue;
+    if (!recentTxAmountMeetsMinimum(row.amountUsdt)) continue;
     const walletType = classifyRecentTxWallet(row.fromAddress, row.toAddress);
     if (!walletType) continue;
     seen.add(key);
@@ -235,6 +241,35 @@ export function applyLargeTxMinAmountFilter<
   T extends { gte: (col: string, val: number | string) => T },
 >(query: T, column = "amount_usdt"): T {
   return query.gte(column, LARGE_TX_MIN_USDT);
+}
+
+/**
+ * Amount constraint for the Recent TX Supabase query.
+ * 9999 is excluded; 10000 is included. Does not change the large-tx helper.
+ */
+export function applyRecentTxAmountFilter<
+  T extends { gte: (col: string, val: number | string) => T },
+>(query: T, column = "amount_usdt"): T {
+  return query.gte(column, RECENT_TX_MIN_USDT);
+}
+
+/**
+ * Recent TX database constraints for one monitored wallet:
+ * amount_usdt >= 10000 AND (incoming OR outgoing, self-transfers excluded).
+ * The route runs this for deposit, withdraw, and reserve only.
+ */
+export function applyRecentTxQuery<
+  T extends {
+    gte: (col: string, val: number | string) => T;
+    eq: (col: string, val: string) => T;
+    neq: (col: string, val: string) => T;
+    or: (filters: string) => T;
+  },
+>(query: T, walletType: WalletCardType): T {
+  return applyLargeTxWalletFilter(
+    applyRecentTxAmountFilter(query),
+    walletType,
+  );
 }
 
 /**
