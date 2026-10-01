@@ -11,9 +11,18 @@ import type {
 } from "@/types/analytics";
 import { getSupabaseBrowser } from "@/lib/supabase/client";
 import { CHAIN_ID, SYNC_INTERVAL_SECONDS } from "@/lib/config";
+import {
+  recentTxRefreshStrategy,
+} from "@/lib/analytics/recent-refresh";
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(
@@ -59,7 +68,7 @@ export default function HomePage() {
   const loadRecentTx = useCallback(async () => {
     try {
       const res = await fetchJson<RecentTransactionsResponse>(
-        "/api/recent-transactions",
+        `/api/recent-transactions?t=${Date.now()}`,
       );
       setRecentTx(res);
       if (res.configError) setConfigError(res.configError);
@@ -81,9 +90,20 @@ export default function HomePage() {
   }, [loadCore, loadRecentTx]);
 
   useEffect(() => {
-    const id = setInterval(refreshAll, POLL_MS);
+    const id = setInterval(() => {
+      void loadCore();
+    }, POLL_MS);
     return () => clearInterval(id);
-  }, [refreshAll]);
+  }, [loadCore]);
+
+  useEffect(() => {
+    // Polling always runs, including when Supabase Realtime is disabled.
+    const strategy = recentTxRefreshStrategy(Boolean(getSupabaseBrowser()));
+    const id = setInterval(() => {
+      void loadRecentTx();
+    }, strategy.pollMs);
+    return () => clearInterval(id);
+  }, [loadRecentTx]);
 
   useEffect(() => {
     const onVisibility = () => {

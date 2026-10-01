@@ -9,12 +9,16 @@ import {
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import { addressesEqual, normalizeAddress } from "@/lib/utils/addresses";
 import { dateKeyUtc } from "@/lib/utils/dates";
-import { getEtherscanLatestBlock } from "./etherscan";
 import {
-  resolveScanStartBlock,
   scanUsdtTransfersToWallets,
 } from "./logs";
 import { checkRpcHealth, getLatestBlockNumber } from "./rpc";
+import { acquireSyncLease } from "./sync-lock";
+import {
+  planSyncWindow,
+  resolveNextCheckpoint,
+  type SyncMode,
+} from "./sync-plan";
 import { getTokenInfo } from "./token";
 import type { ValidatedTransfer } from "@/types/blockchain";
 import { reconcileDailyStats } from "@/lib/analytics/aggregation";
@@ -31,6 +35,8 @@ export interface SyncResult {
   withdrawOutInserted: number;
   /** Withdraw Wallet OUT rows skipped as duplicates. */
   withdrawOutDuplicatesSkipped: number;
+  /** Another worker holds the sync lease. */
+  busy?: boolean;
   scanStartBlock: number | null;
   scanEndBlock: number | null;
   lastIndexedBlock: number | null;
@@ -293,20 +299,20 @@ async function bumpDailyStats(transfers: ValidatedTransfer[]) {
 }
 
 /**
- * Incremental / historical sync of USDT transfers for monitored wallets
- * via BSC RPC eth_getLogs (chunked, resumable).
- *
- * Optional startBlock/endBlock runs a targeted backfill for that inclusive
- * range without lowering sync_state when the tip is already ahead.
+ * Incremental / historical sync of USDT transfers for monitored wallets.
+ * Near-head scans use BSC RPC eth_getLogs. The checkpoint moves only after
+ * a block range is actually scanned. Empty external-indexer responses do not
+ * count as success (handled in the log scanner).
  */
 export async function runSync(options?: {
   fullHistory?: boolean;
   startBlock?: number;
   endBlock?: number;
+  mode?: SyncMode;
+  maxBlocksPerRun?: number;
 }): Promise<SyncResult> {
+  const startedAt = Date.now();
   console.log("[sync] Sync started");
-
-  const emptyErrors: string[] = [];
 
   const configError = getPrimaryConfigError();
   if (configError) {
@@ -328,9 +334,12 @@ export async function runSync(options?: {
     });
   }
 
-  try {
-    await upsertSyncState({ status: "syncing", last_error: null });
+  const mode: SyncMode = options?.fullHistory
+    ? "full"
+    : (options?.mode ?? "incremental");
+  let leaseHeld = false;
 
+  try {
     const health = await checkRpcHealth();
     if (
       !health.rpcConnected ||
@@ -352,89 +361,117 @@ export async function runSync(options?: {
       Number(process.env.NEXT_PUBLIC_CHAIN_ID || 56),
     );
 
-    let latestBlock: number | null = null;
-    try {
-      latestBlock = await getLatestBlockNumber();
-    } catch {
-      try {
-        latestBlock = await getEtherscanLatestBlock();
-      } catch (err) {
-        console.warn("[sync] Could not resolve latest block:", err);
-      }
-    }
-
-    if (latestBlock == null) {
-      throw new Error("Could not resolve latest BSC block number via RPC.");
-    }
-
+    const latestBlock = await getLatestBlockNumber();
     const state = await getSyncState();
-    const storedLastIndexed: number = state?.last_indexed_block ?? 0;
+    const storedLastIndexed: number = Number(state?.last_indexed_block ?? 0);
     const targetedBackfill =
       options?.startBlock != null &&
       Number.isFinite(options.startBlock) &&
       options.startBlock > 0;
 
-    const lastIndexed = options?.fullHistory ? 0 : storedLastIndexed;
-    let startBlock = options?.fullHistory
-      ? resolveScanStartBlock(0)
-      : resolveScanStartBlock(lastIndexed);
-    let endBlock = latestBlock;
+    const lookbackRaw = process.env.SYNC_LOOKBACK_BLOCKS;
+    const lookback =
+      lookbackRaw === undefined || lookbackRaw === ""
+        ? 500_000
+        : Number.parseInt(lookbackRaw, 10);
 
-    // First-time / full history: start within SYNC_LOOKBACK_BLOCKS of tip.
-    // SQD Portal indexes the full range; eth_getLogs earliest-search is optional
-    // (many public RPCs refuse archive getLogs). Set SYNC_LOOKBACK_BLOCKS=0 for
-    // SYNC_START_BLOCK → tip. Incremental runs resume from sync_state.
-    if (!targetedBackfill && (lastIndexed === 0 || options?.fullHistory)) {
-      const lookbackRaw = process.env.SYNC_LOOKBACK_BLOCKS;
-      const lookback =
-        lookbackRaw === undefined || lookbackRaw === ""
-          ? 500_000
-          : Number.parseInt(lookbackRaw, 10);
-      if (Number.isFinite(lookback) && lookback > 0) {
-        startBlock = Math.max(SYNC_START_BLOCK, latestBlock - lookback);
-        console.log(
-          `[sync] First-time/full window: last ${lookback} blocks → start ${startBlock}`,
-        );
-      } else {
-        startBlock = resolveScanStartBlock(0);
-        console.log(
-          `[sync] Full history from SYNC_START_BLOCK ${startBlock}`,
-        );
-      }
-    }
+    let plan = planSyncWindow({
+      lastIndexedBlock: mode === "full" ? 0 : storedLastIndexed,
+      latestBlock,
+      mode,
+      maxBlocksPerRun: options?.maxBlocksPerRun,
+      lookbackBlocks: Number.isFinite(lookback) ? lookback : 0,
+      syncStartBlock: SYNC_START_BLOCK,
+    });
 
     if (targetedBackfill) {
-      startBlock = Math.max(SYNC_START_BLOCK, Math.floor(options!.startBlock!));
-      if (options?.endBlock != null && Number.isFinite(options.endBlock)) {
-        endBlock = Math.min(latestBlock, Math.floor(options.endBlock));
-      }
+      const startBlock = Math.max(
+        SYNC_START_BLOCK,
+        Math.floor(options!.startBlock!),
+      );
+      const endBlock =
+        options?.endBlock != null && Number.isFinite(options.endBlock)
+          ? Math.min(latestBlock, Math.floor(options.endBlock))
+          : latestBlock;
+      plan = {
+        shouldRun: startBlock <= endBlock,
+        startBlock,
+        endBlock,
+        checkpointAllowed: true,
+        reason: "targeted-backfill",
+      };
       console.log(
         `[sync] Targeted backfill ${startBlock}→${endBlock} (stored last_indexed=${storedLastIndexed})`,
       );
     }
 
     console.log(
-      `[sync] Scanning USDT Transfer logs blocks ${startBlock}→${endBlock} (SQD/RPC, resume from ${lastIndexed})`,
+      `[sync] head=${latestBlock} previousIndexed=${storedLastIndexed} mode=${mode} plan=${plan.reason} target=${plan.startBlock}→${plan.endBlock} checkpointAllowed=${plan.checkpointAllowed}`,
     );
 
+    if (!plan.shouldRun) {
+      return {
+        ok: true,
+        inserted: 0,
+        duplicatesSkipped: 0,
+        processed: 0,
+        withdrawOutFound: 0,
+        withdrawOutInserted: 0,
+        withdrawOutDuplicatesSkipped: 0,
+        scanStartBlock: plan.startBlock,
+        scanEndBlock: plan.endBlock,
+        lastIndexedBlock: storedLastIndexed,
+        latestBlock,
+        errors: [],
+      };
+    }
+
+    if (plan.checkpointAllowed) {
+      const lease = await acquireSyncLease();
+      if (!lease.acquired) {
+        console.log("[sync] Lease held by another worker; skipping");
+        return {
+          ok: true,
+          busy: true,
+          inserted: 0,
+          duplicatesSkipped: 0,
+          processed: 0,
+          withdrawOutFound: 0,
+          withdrawOutInserted: 0,
+          withdrawOutDuplicatesSkipped: 0,
+          scanStartBlock: plan.startBlock,
+          scanEndBlock: plan.endBlock,
+          lastIndexedBlock: lease.lastIndexedBlock || storedLastIndexed,
+          latestBlock,
+          errors: [],
+        };
+      }
+      leaseHeld = true;
+    }
+
+    const startBlock = plan.startBlock;
+    const endBlock = plan.endBlock;
     let inserted = 0;
     let duplicatesSkipped = 0;
     let processed = 0;
     let withdrawOutFound = 0;
     let withdrawOutInserted = 0;
     let withdrawOutDuplicatesSkipped = 0;
-    const scanErrors: string[] = [...emptyErrors];
-    let checkpointBlock = Math.max(0, startBlock - 1);
+    let logsFound = 0;
+    let lastSuccessfulChunk: number | null = null;
 
     const scan = await scanUsdtTransfersToWallets({
       startBlock,
       endBlock,
       tokenDecimals: token.decimals,
       tokenSymbol: token.symbol,
-      onProgress: ({ fromBlock, toBlock, logsFound, chunkSize }) => {
-        if (logsFound > 0 || toBlock % (chunkSize * 25) < chunkSize) {
+      // Near-real-time and bounded incremental scans use canonical BSC RPC.
+      forceRpc: mode !== "full" || targetedBackfill,
+      onProgress: ({ fromBlock, toBlock, logsFound: chunkLogs, chunkSize }) => {
+        logsFound += chunkLogs;
+        if (chunkLogs > 0 || toBlock % (chunkSize * 25) < chunkSize) {
           console.log(
-            `[sync] blocks ${fromBlock}–${toBlock}: ${logsFound} log(s) (chunk=${chunkSize})`,
+            `[sync] blocks ${fromBlock}–${toBlock}: ${chunkLogs} log(s) (chunk=${chunkSize})`,
           );
         }
       },
@@ -448,7 +485,6 @@ export async function runSync(options?: {
           const outs = unique.filter(isWithdrawOutTransfer);
           withdrawOutFound += outs.length;
 
-          // Pre-check OUT identities so insert vs duplicate counts stay accurate.
           if (outs.length > 0) {
             const supabase = getSupabaseAdmin();
             const { data: existingOuts } = await supabase
@@ -481,8 +517,10 @@ export async function runSync(options?: {
           await bumpDailyStats(unique);
         }
 
-        checkpointBlock = toBlock;
-        // Never lower the stored tip during a historical backfill window.
+        lastSuccessfulChunk = toBlock;
+        if (!plan.checkpointAllowed) {
+          return;
+        }
         const checkpoint = Math.max(toBlock, storedLastIndexed);
         await upsertSyncState({
           status: "syncing",
@@ -492,33 +530,39 @@ export async function runSync(options?: {
       },
     });
 
-    scanErrors.push(...scan.errors);
-
-    // Always rebuild daily_stats from all indexed txs (paginated).
-    // Prevents stale/partial day totals after chunked sync or a prior
-    // unpaginated reconcile that truncated at Supabase's 1000-row cap.
-    await reconcileDailyStats();
-
-    const indexedBlock = Math.max(
-      checkpointBlock,
-      scan.lastScannedBlock,
-      storedLastIndexed,
-      targetedBackfill ? storedLastIndexed : endBlock,
-    );
-
-    await upsertSyncState({
-      status: "synced",
-      last_indexed_block: indexedBlock,
-      last_successful_sync: new Date().toISOString(),
-      last_error: scanErrors.length > 0 ? scanErrors.slice(0, 5).join("; ") : null,
+    const scanComplete =
+      scan.errors.length === 0 && scan.lastScannedBlock >= endBlock;
+    const indexedBlock = resolveNextCheckpoint({
+      stored: storedLastIndexed,
+      startBlock,
+      endBlock,
+      lastSuccessfulChunk,
+      scanComplete,
+      checkpointAllowed: plan.checkpointAllowed,
     });
 
+    if (mode === "full" || targetedBackfill) {
+      await reconcileDailyStats();
+    }
+
+    if (plan.checkpointAllowed) {
+      await upsertSyncState({
+        status: scanComplete ? "synced" : "error",
+        last_indexed_block: indexedBlock,
+        last_successful_sync: scanComplete ? new Date().toISOString() : undefined,
+        last_error: scan.errors.length
+          ? scan.errors.slice(0, 5).join("; ")
+          : null,
+      });
+    }
+
+    const durationMs = Date.now() - startedAt;
     console.log(
-      `[sync] Sync completed: processed=${processed} inserted=${inserted} duplicatesSkipped=${duplicatesSkipped} withdrawOutFound=${withdrawOutFound} withdrawOutInserted=${withdrawOutInserted} lastIndexedBlock=${indexedBlock} latestBlock=${latestBlock} errors=${scanErrors.length}`,
+      `[sync] done head=${latestBlock} previousIndexed=${storedLastIndexed} target=${startBlock}→${endBlock} blocksScanned=${Math.max(0, scan.lastScannedBlock - startBlock + 1)} logsFound=${logsFound} inserted=${inserted} skippedDuplicates=${duplicatesSkipped} rpcErrors=${scan.errors.length} retries=${scan.retries} durationMs=${durationMs} finalCheckpoint=${indexedBlock} scanComplete=${scanComplete}`,
     );
 
     return {
-      ok: true,
+      ok: scanComplete,
       inserted,
       duplicatesSkipped,
       processed,
@@ -529,15 +573,20 @@ export async function runSync(options?: {
       scanEndBlock: endBlock,
       lastIndexedBlock: indexedBlock,
       latestBlock,
-      errors: scanErrors,
+      errors: scan.errors,
+      error: scanComplete
+        ? undefined
+        : scan.errors[0] || "Scan did not reach the target block",
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed";
     console.error("[sync] Sync failed:", message);
-    try {
-      await upsertSyncState({ status: "error", last_error: message });
-    } catch {
-      /* ignore */
+    if (leaseHeld) {
+      try {
+        await upsertSyncState({ status: "error", last_error: message });
+      } catch {
+        /* ignore */
+      }
     }
     return emptySyncResult({
       ok: false,

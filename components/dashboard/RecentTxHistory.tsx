@@ -13,12 +13,11 @@ import {
   formatRelativeTime,
 } from "@/lib/utils/dates";
 import { formatUsdtExact } from "@/lib/utils/format";
-import { LARGE_TX_MIN_USDT, explorerTxUrl } from "@/lib/config";
+import { explorerTxUrl } from "@/lib/config";
 import {
   RECENT_TX_LIMIT,
   classifyRecentTxDirection,
-  meetsLargeTxMinUsdt,
-  selectLatestCombinedTransactions,
+  selectRecentTxFeed,
 } from "@/lib/analytics/filters";
 import { CopyButton, CopyIconButton } from "./CopyButton";
 import { EmptyState } from "./EmptyState";
@@ -90,18 +89,10 @@ export function RecentTxHistory({
 
   const liveStatus = data?.liveStatus ?? "STALE";
 
-  // Defensive client pass — API already queries all 3 wallets, filters >= 10k,
-  // combines, dedupes, sorts newest-first, and caps at 10. Do not filter by
-  // walletType here (must keep Deposit + Withdraw + Reserve).
+  // Defensive client pass. No large-tx minimum on the main Recent TX feed.
   const txs = useMemo(() => {
     const rows = data?.transactions ?? [];
-    const filtered = rows.filter((tx) =>
-      meetsLargeTxMinUsdt(tx.amountUsdt, LARGE_TX_MIN_USDT, {
-        amountRaw: tx.amountRaw,
-        tokenDecimals: tx.tokenDecimals,
-      }),
-    );
-    return selectLatestCombinedTransactions(filtered, RECENT_TX_LIMIT);
+    return selectRecentTxFeed(rows, RECENT_TX_LIMIT);
   }, [data?.transactions]);
 
   return (
@@ -115,9 +106,6 @@ export function RecentTxHistory({
             <h2 className="text-lg font-bold text-white">Recent TX History</h2>
             <p className="mt-0.5 text-sm text-[var(--tn-muted)]">
               Latest 10 USDT Transactions (All Wallets Combined)
-            </p>
-            <p className="mt-0.5 text-xs text-[var(--tn-muted)]">
-              Minimum: {LARGE_TX_MIN_USDT.toLocaleString("en-US")} USDT
             </p>
           </div>
         </div>
@@ -172,7 +160,7 @@ export function RecentTxHistory({
           ))}
         </div>
       ) : txs.length === 0 ? (
-        <EmptyState message="No transactions >= 10,000 USDT found" />
+        <EmptyState message="No USDT transfers yet" />
       ) : (
         <ol className="space-y-2.5">
           {txs.map((tx, index) => (

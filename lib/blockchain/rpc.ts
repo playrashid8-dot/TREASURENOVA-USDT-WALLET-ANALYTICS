@@ -1,5 +1,6 @@
 import { JsonRpcProvider, Network } from "ethers";
 import { BSC_RPC_URL, CHAIN_ID } from "@/lib/config";
+import { redactRpcUrl } from "./sync-plan";
 import type { BlockchainHealth } from "@/types/blockchain";
 
 /** Fallback endpoints when the primary RPC rate-limits or rejects a method. */
@@ -38,7 +39,7 @@ export function getRpcProviderUrl(): string {
 function rotateProvider(reason: string): JsonRpcProvider {
   const idx = RPC_FALLBACKS.indexOf(providerUrl);
   const next = RPC_FALLBACKS[(idx + 1) % RPC_FALLBACKS.length] || RPC_FALLBACKS[0];
-  console.warn(`[rpc] Rotating RPC after error (${reason}) → ${next}`);
+  console.warn(`[rpc] Rotating RPC after error (${reason}) → ${redactRpcUrl(next)}`);
   providerUrl = next;
   provider = createProvider(next);
   return provider;

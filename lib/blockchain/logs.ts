@@ -21,6 +21,7 @@ import { normalizeAddress } from "@/lib/utils/addresses";
 import { blockTimestampToIso } from "@/lib/utils/dates";
 import { rawToUsdt } from "@/lib/utils/format";
 import { classifyIndexedTransferRoles } from "./validation";
+import { externalPageConfirmsRange } from "./sync-plan";
 import {
   getBlockTimestamp,
   getChainId,
@@ -34,7 +35,9 @@ const TRANSFER_IFACE = new Interface([
 
 const MIN_CHUNK_SIZE = 1;
 const MAX_GETLOGS_ATTEMPTS = 8;
-const OVERLAP_BLOCKS = 5;
+const MAX_CURSOR_RETRIES = 6;
+/** Re-scan a few blocks before the checkpoint so a short reorg is not missed. */
+export const OVERLAP_BLOCKS = 5;
 
 /** SQD Portal dataset for BNB Smart Chain (chain id 56). */
 const SQD_STREAM_URL =
@@ -65,6 +68,13 @@ export function resolveScanStartBlock(lastIndexedBlock: number): number {
     return SYNC_START_BLOCK;
   }
   return Math.max(0, lastIndexedBlock - OVERLAP_BLOCKS);
+}
+
+export interface ScanStats {
+  lastScannedBlock: number;
+  errors: string[];
+  logsFound: number;
+  retries: number;
 }
 
 function addressToTopic(address: string): string {
@@ -137,12 +147,15 @@ function isRetryableRpcError(err: unknown): boolean {
   );
 }
 
-async function getLogsWithRetry(filter: {
-  address: string;
-  fromBlock: number;
-  toBlock: number;
-  topics: (string | null)[];
-}): Promise<Log[]> {
+async function getLogsWithRetry(
+  filter: {
+    address: string;
+    fromBlock: number;
+    toBlock: number;
+    topics: (string | null)[];
+  },
+  stats?: { retries: number },
+): Promise<Log[]> {
   const provider = getRpcProvider();
   let lastError: Error | null = null;
 
@@ -162,9 +175,12 @@ async function getLogsWithRetry(filter: {
       if (!isRetryableRpcError(err) || attempt === MAX_GETLOGS_ATTEMPTS - 1) {
         throw lastError;
       }
+      if (stats) stats.retries += 1;
       const retryAfter = extractRetryAfterMs(err);
-      const backoff =
-        retryAfter ?? Math.min(1000 * 2 ** attempt, 30_000);
+      const backoff = retryAfter ?? Math.min(1000 * 2 ** attempt, 30_000);
+      console.warn(
+        `[logs] eth_getLogs retry ${attempt + 1} blocks ${filter.fromBlock}-${filter.toBlock}: ${lastError.message.slice(0, 180)}`,
+      );
       await sleep(backoff);
     }
   }
@@ -184,6 +200,7 @@ async function fetchTransferLogsAdaptive(options: {
   fromBlock: number;
   toBlock: number;
   preferredChunk: number;
+  stats?: { retries: number };
 }): Promise<{
   logs: Log[];
   scannedTo: number;
@@ -210,7 +227,7 @@ async function fetchTransferLogsAdaptive(options: {
             fromBlock,
             toBlock: chunkEnd,
             topics: [TRANSFER_EVENT_TOPIC, null, addressToTopic(to)],
-          }),
+          }, options.stats),
         ),
         ...fromList.map((from) =>
           getLogsWithRetry({
@@ -218,7 +235,7 @@ async function fetchTransferLogsAdaptive(options: {
             fromBlock,
             toBlock: chunkEnd,
             topics: [TRANSFER_EVENT_TOPIC, addressToTopic(from), null],
-          }),
+          }, options.stats),
         ),
       ]);
       // Deduplicate identical logs from overlapping topic1/topic2 queries
@@ -414,7 +431,7 @@ function decodeTransferLog(log: {
   }
 }
 
-function buildValidatedTransfers(options: {
+export function buildValidatedTransfers(options: {
   txHash: string;
   logIndex: number;
   blockNumber: number;
@@ -555,8 +572,12 @@ async function validateAndEnrichRpcLog(
     }
   }
 
-  // Logs in a mined block imply success; accept when receipt is unavailable.
-  if (receiptStatus !== 1 && receiptStatus !== null) {
+  // A mined Transfer log still needs a successful receipt. If the receipt
+  // cannot be read, fail the chunk so the checkpoint does not skip the tx.
+  if (receiptStatus == null) {
+    throw new Error(`Receipt unavailable for ${txHash}`);
+  }
+  if (receiptStatus !== 1) {
     return [];
   }
 
@@ -739,10 +760,18 @@ async function scanViaSqd(options: {
   chainId: number;
   onProgress?: (progress: ScanProgress) => void;
   onChunkComplete?: (chunk: ScanChunkComplete) => Promise<void>;
-}): Promise<{ lastScannedBlock: number; errors: string[]; ok: boolean }> {
+}): Promise<{
+  lastScannedBlock: number;
+  errors: string[];
+  ok: boolean;
+  unavailable: boolean;
+  logsFound: number;
+  retries: number;
+}> {
   const errors: string[] = [];
   let cursor = options.startBlock;
   let lastScannedBlock = Math.max(0, cursor - 1);
+  let totalLogs = 0;
   const windowSize = SQD_WINDOW_SIZE;
 
   while (cursor <= options.endBlock) {
@@ -755,9 +784,19 @@ async function scanViaSqd(options: {
     try {
       while (pageFrom <= windowEnd) {
         const { status, blocks } = await fetchSqdPage(pageFrom, windowEnd);
-        if (status === 204 || blocks.length === 0) {
-          advancedTo = windowEnd;
-          break;
+        // 204 or an empty indexer page means "not confirmed", not "no transfers".
+        if (!externalPageConfirmsRange(status, blocks.length)) {
+          errors.push(
+            `SQD ${status === 204 ? "204" : "empty"} blocks ${pageFrom}–${windowEnd}; not indexed`,
+          );
+          return {
+            lastScannedBlock,
+            errors,
+            ok: false,
+            unavailable: true,
+            logsFound,
+            retries: 0,
+          };
         }
 
         for (const block of blocks) {
@@ -778,8 +817,17 @@ async function scanViaSqd(options: {
       }
 
       if (advancedTo < cursor) {
-        // No progress — advance window to avoid stall
-        advancedTo = windowEnd;
+        errors.push(
+          `SQD made no progress for blocks ${cursor}–${windowEnd}; not indexed`,
+        );
+        return {
+          lastScannedBlock,
+          errors,
+          ok: false,
+          unavailable: true,
+          logsFound,
+          retries: 0,
+        };
       }
 
       options.onProgress?.({
@@ -796,16 +844,31 @@ async function scanViaSqd(options: {
         });
       }
 
+      totalLogs += logsFound;
       lastScannedBlock = advancedTo;
       cursor = advancedTo + 1;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`SQD blocks ${cursor}–${windowEnd}: ${msg}`);
-      return { lastScannedBlock, errors, ok: false };
+      return {
+        lastScannedBlock,
+        errors,
+        ok: false,
+        unavailable: true,
+        logsFound: totalLogs,
+        retries: 0,
+      };
     }
   }
 
-  return { lastScannedBlock, errors, ok: true };
+  return {
+    lastScannedBlock,
+    errors,
+    ok: true,
+    unavailable: false,
+    logsFound: totalLogs,
+    retries: 0,
+  };
 }
 
 async function scanViaRpc(options: {
@@ -817,8 +880,10 @@ async function scanViaRpc(options: {
   chainId: number;
   onProgress?: (progress: ScanProgress) => void;
   onChunkComplete?: (chunk: ScanChunkComplete) => Promise<void>;
-}): Promise<{ lastScannedBlock: number; errors: string[] }> {
+}): Promise<ScanStats> {
   const errors: string[] = [];
+  const stats = { retries: 0 };
+  let logsFound = 0;
   const toAddresses = [DEPOSIT_WALLET, WITHDRAW_WALLET, RESERVE_FUND_WALLET].filter(
     (a) => isAddress(a),
   );
@@ -832,6 +897,7 @@ async function scanViaRpc(options: {
   const endBlock = Math.max(cursor, options.endBlock);
   let preferredChunk = Math.min(LOG_SCAN_CHUNK_SIZE, 9_999);
   let lastScannedBlock = Math.max(0, cursor - 1);
+  let cursorRetries = 0;
 
   const timestampCache = new Map<number, number>();
   const receiptCache = new Map<string, number | null>();
@@ -845,15 +911,19 @@ async function scanViaRpc(options: {
         fromBlock: cursor,
         toBlock: endBlock,
         preferredChunk,
+        stats,
       });
 
       if (usedChunk < preferredChunk) {
         preferredChunk = usedChunk;
-      } else if (preferredChunk < 9_999) {
-        preferredChunk = Math.min(9_999, preferredChunk * 2);
+      } else if (preferredChunk < 2_000) {
+        preferredChunk = Math.min(2_000, preferredChunk * 2);
       }
+      cursorRetries = 0;
+      logsFound += logs.length;
 
       const transfers: ValidatedTransfer[] = [];
+      let chunkFailed = false;
       for (const log of logs) {
         try {
           const validated = await validateAndEnrichRpcLog(log, {
@@ -868,7 +938,16 @@ async function scanViaRpc(options: {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           errors.push(`log ${log.transactionHash}:${log.index}: ${msg}`);
+          chunkFailed = true;
+          break;
         }
+      }
+
+      if (chunkFailed) {
+        console.warn(
+          `[logs] Chunk ${cursor}–${scannedTo} not checkpointed after log enrichment failure`,
+        );
+        break;
       }
 
       options.onProgress?.({
@@ -887,28 +966,29 @@ async function scanViaRpc(options: {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`RPC blocks ${cursor}–${endBlock}: ${msg}`);
+      console.warn(`[logs] RPC scan stopped at block ${cursor}: ${msg.slice(0, 200)}`);
 
-      if (isRetryableRpcError(err) && preferredChunk > MIN_CHUNK_SIZE) {
-        preferredChunk = Math.max(
-          MIN_CHUNK_SIZE,
-          Math.floor(preferredChunk / 2),
-        );
-        const wait = extractRetryAfterMs(err) ?? 1000;
+      // Never skip the failed block. Retry transient errors, then stop so
+      // the checkpoint stays on the last successfully scanned block.
+      if (isRetryableRpcError(err) && cursorRetries < MAX_CURSOR_RETRIES) {
+        cursorRetries += 1;
+        stats.retries += 1;
+        if (isRangeTooLargeError(err) && preferredChunk > MIN_CHUNK_SIZE) {
+          preferredChunk = Math.max(
+            MIN_CHUNK_SIZE,
+            Math.floor(preferredChunk / 2),
+          );
+        }
+        const wait = extractRetryAfterMs(err) ?? Math.min(1000 * 2 ** cursorRetries, 20_000);
         await sleep(wait);
         continue;
       }
 
-      const skipTo = Math.min(cursor, endBlock);
-      lastScannedBlock = skipTo;
-      if (options.onChunkComplete) {
-        await options.onChunkComplete({ toBlock: skipTo, transfers: [] });
-      }
-      cursor = skipTo + 1;
-      if (errors.length > 50) break;
+      break;
     }
   }
 
-  return { lastScannedBlock, errors };
+  return { lastScannedBlock, errors, logsFound, retries: stats.retries };
 }
 
 /**
@@ -920,14 +1000,18 @@ export async function scanUsdtTransfersToWallets(options: {
   endBlock: number;
   tokenDecimals: number;
   tokenSymbol: string;
+  /** Incremental / near-head scans must use BSC RPC, not an external indexer. */
+  forceRpc?: boolean;
   onProgress?: (progress: ScanProgress) => void;
   onChunkComplete?: (chunk: ScanChunkComplete) => Promise<void>;
-}): Promise<{ lastScannedBlock: number; errors: string[] }> {
+}): Promise<ScanStats> {
   const tokenContract = USDT_CONTRACT_ADDRESS;
   if (!tokenContract) {
     return {
       lastScannedBlock: Math.max(0, options.startBlock - 1),
       errors: ["USDT_CONTRACT_ADDRESS is not configured."],
+      logsFound: 0,
+      retries: 0,
     };
   }
 
@@ -936,6 +1020,8 @@ export async function scanUsdtTransfersToWallets(options: {
     return {
       lastScannedBlock: Math.max(0, options.startBlock - 1),
       errors: [`Unexpected chain ID ${chainId}; expected ${CHAIN_ID}`],
+      logsFound: 0,
+      retries: 0,
     };
   }
 
@@ -943,6 +1029,8 @@ export async function scanUsdtTransfersToWallets(options: {
     return {
       lastScannedBlock: options.endBlock,
       errors: [],
+      logsFound: 0,
+      retries: 0,
     };
   }
 
@@ -957,34 +1045,63 @@ export async function scanUsdtTransfersToWallets(options: {
     onChunkComplete: options.onChunkComplete,
   };
 
-  const preferRpc = (process.env.LOG_SCAN_SOURCE || "auto").toLowerCase() === "rpc";
-  const preferSqd = (process.env.LOG_SCAN_SOURCE || "auto").toLowerCase() === "sqd";
+  const source = (process.env.LOG_SCAN_SOURCE || "auto").toLowerCase();
+  const preferRpc = options.forceRpc || source === "rpc";
+  const preferSqd = source === "sqd" && !options.forceRpc;
 
   if (!preferRpc) {
-    console.log(
-      `[logs] Scanning via SQD Portal (${SQD_STREAM_URL.replace(/\/stream$/, "")})`,
-    );
+    console.log("[logs] Historical scan trying SQD Portal before BSC RPC");
     const sqd = await scanViaSqd(shared);
-    if (sqd.ok) {
-      return { lastScannedBlock: sqd.lastScannedBlock, errors: sqd.errors };
+    const sqdDone =
+      sqd.ok &&
+      !sqd.unavailable &&
+      sqd.errors.length === 0 &&
+      sqd.lastScannedBlock >= options.endBlock;
+    if (sqdDone) {
+      return {
+        lastScannedBlock: sqd.lastScannedBlock,
+        errors: sqd.errors,
+        logsFound: sqd.logsFound,
+        retries: sqd.retries,
+      };
     }
 
     if (preferSqd) {
-      return { lastScannedBlock: sqd.lastScannedBlock, errors: sqd.errors };
+      // Forced SQD must not pretend a 204/empty page finished the range.
+      return {
+        lastScannedBlock: sqd.lastScannedBlock,
+        errors: sqd.errors.length
+          ? sqd.errors
+          : ["SQD did not confirm the requested block range."],
+        logsFound: sqd.logsFound,
+        retries: sqd.retries,
+      };
     }
 
+    const resume = Math.max(shared.startBlock, sqd.lastScannedBlock + 1);
     console.warn(
-      "[logs] SQD scan incomplete; falling back to RPC eth_getLogs from",
-      sqd.lastScannedBlock + 1,
+      "[logs] External indexer did not confirm the range (empty/204/unavailable). Falling back to BSC RPC eth_getLogs from",
+      resume,
     );
-    shared.startBlock = Math.max(shared.startBlock, sqd.lastScannedBlock + 1);
-    const rpc = await scanViaRpc(shared);
+    if (resume > options.endBlock) {
+      return {
+        lastScannedBlock: sqd.lastScannedBlock,
+        errors: sqd.errors,
+        logsFound: sqd.logsFound,
+        retries: sqd.retries,
+      };
+    }
+    const rpc = await scanViaRpc({ ...shared, startBlock: resume });
+    const rpcDone =
+      rpc.errors.length === 0 && rpc.lastScannedBlock >= options.endBlock;
     return {
       lastScannedBlock: Math.max(sqd.lastScannedBlock, rpc.lastScannedBlock),
-      errors: [...sqd.errors, ...rpc.errors],
+      errors: rpcDone ? rpc.errors : [...sqd.errors, ...rpc.errors],
+      logsFound: sqd.logsFound + rpc.logsFound,
+      retries: sqd.retries + rpc.retries,
     };
   }
 
-  console.log("[logs] Scanning via RPC eth_getLogs");
+  console.log("[logs] Scanning via BSC RPC eth_getLogs");
   return scanViaRpc(shared);
 }

@@ -12,7 +12,10 @@ import type { DateRange, WalletCardType } from "@/types/analytics";
 /** Max rows in the combined Recent TX History section. */
 export const RECENT_TX_LIMIT = 10;
 
-/** Alias for the Recent TX History floor (10,000 USDT). */
+/**
+ * Floor for the separate Recent Large Transactions section only.
+ * The main Recent TX History feed does not use this minimum.
+ */
 export const MIN_TRANSACTION_USDT = LARGE_TX_MIN_USDT;
 
 /**
@@ -83,10 +86,15 @@ export function qualifiesForRecentTxHistory(
 ): boolean {
   if (classifyRecentTxWallet(fromAddress, toAddress) == null) return false;
   if (amountUsdt === undefined && amountRaw === undefined) return true;
-  return meetsLargeTxMinUsdt(amountUsdt ?? 0, LARGE_TX_MIN_USDT, {
-    amountRaw,
-    tokenDecimals,
-  });
+  // Main feed shows every positive USDT transfer. The 10k floor is only
+  // for the explicit large-transactions section.
+  if (amountRaw !== undefined && tokenDecimals !== undefined) {
+    return meetsLargeTxMinUsdt(amountUsdt ?? 0, 0, {
+      amountRaw,
+      tokenDecimals,
+    }) && (amountUsdt ?? 0) > 0;
+  }
+  return Number.isFinite(amountUsdt) && (amountUsdt ?? 0) > 0;
 }
 
 /**
@@ -126,6 +134,46 @@ export function selectLatestCombinedTransactions<
     ) {
       continue;
     }
+    const walletType = classifyRecentTxWallet(row.fromAddress, row.toAddress);
+    if (!walletType) continue;
+    seen.add(key);
+    classified.push({ ...row, walletType });
+  }
+
+  classified.sort((a, b) => {
+    if (b.blockNumber !== a.blockNumber) return b.blockNumber - a.blockNumber;
+    if (b.logIndex !== a.logIndex) return b.logIndex - a.logIndex;
+    return b.timestamp.localeCompare(a.timestamp);
+  });
+
+  return classified.slice(0, Math.max(0, limit));
+}
+
+/**
+ * Main Recent TX feed: all qualifying USDT transfers, newest first.
+ * Does NOT apply LARGE_TX_MIN_USDT (that floor stays on the large-tx section).
+ */
+export function selectRecentTxFeed<
+  T extends {
+    txHash: string;
+    logIndex: number;
+    fromAddress: string;
+    toAddress: string;
+    blockNumber: number;
+    timestamp: string;
+    amountUsdt: number;
+  },
+>(
+  rows: T[],
+  limit = RECENT_TX_LIMIT,
+): Array<T & { walletType: WalletCardType }> {
+  const seen = new Set<string>();
+  const classified: Array<T & { walletType: WalletCardType }> = [];
+
+  for (const row of rows) {
+    const key = `${row.txHash}:${row.logIndex}`;
+    if (seen.has(key)) continue;
+    if (!Number.isFinite(row.amountUsdt) || row.amountUsdt <= 0) continue;
     const walletType = classifyRecentTxWallet(row.fromAddress, row.toAddress);
     if (!walletType) continue;
     seen.add(key);

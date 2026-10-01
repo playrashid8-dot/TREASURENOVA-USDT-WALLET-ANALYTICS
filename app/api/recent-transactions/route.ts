@@ -1,6 +1,5 @@
 import {
   DEPOSIT_WALLET,
-  LARGE_TX_MIN_USDT,
   RESERVE_FUND_WALLET,
   SYNC_KEY,
   USDT_CONTRACT_ADDRESS,
@@ -9,11 +8,10 @@ import {
 } from "@/lib/config";
 import {
   RECENT_TX_LIMIT,
-  applyLargeTxMinAmountFilter,
   applyLargeTxWalletFilter,
-  meetsLargeTxMinUsdt,
-  selectLatestCombinedTransactions,
+  selectRecentTxFeed,
 } from "@/lib/analytics/filters";
+import { recentTxCacheHeaders } from "@/lib/analytics/recent-refresh";
 import { blockLag, deriveLiveStatus } from "@/lib/analytics/live-status";
 import { buildSyncStatusPayload } from "@/lib/api/dashboard-data";
 import {
@@ -22,7 +20,7 @@ import {
   jsonOk,
   withRateLimitHeaders,
 } from "@/lib/api/response";
-import { maybeCatchUpSync } from "@/lib/blockchain/catch-up";
+import { ensureFreshIncrementalSync } from "@/lib/blockchain/catch-up";
 import { getSupabaseAdmin, isSupabaseConfigured } from "@/lib/supabase/server";
 import { normalizeAddress } from "@/lib/utils/addresses";
 import type {
@@ -33,6 +31,8 @@ import type {
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+export const fetchCache = "force-no-store";
+export const maxDuration = 60;
 
 /**
  * Per-wallet fetch cap after the DB amount floor.
@@ -88,8 +88,8 @@ function mapDbRow(r: DbTxRow): Omit<TransactionRow, "walletType"> & {
 
 /**
  * Fetch qualifying rows for one wallet independently (IN + OUT).
- * Filter order: success → USDT token → wallet IN|OUT → amount >= 10k →
- * newest first → per-wallet buffer (never global LIMIT 10 here).
+ * Filter order: success → USDT token → wallet IN|OUT → newest first →
+ * per-wallet buffer (never global LIMIT 10 here). No large-tx minimum.
  */
 async function fetchWalletRecentCandidates(
   walletType: WalletCardType,
@@ -113,7 +113,6 @@ async function fetchWalletRecentCandidates(
   }
 
   query = applyLargeTxWalletFilter(query, walletType);
-  query = applyLargeTxMinAmountFilter(query);
 
   const { data, error, count } = await query;
   if (error) {
@@ -122,12 +121,7 @@ async function fetchWalletRecentCandidates(
 
   const mapped = ((data ?? []) as DbTxRow[])
     .map(mapDbRow)
-    .filter((row) =>
-      meetsLargeTxMinUsdt(row.amountUsdt, LARGE_TX_MIN_USDT, {
-        amountRaw: row.amountRaw,
-        tokenDecimals: row.tokenDecimals,
-      }),
-    );
+    .filter((row) => Number.isFinite(row.amountUsdt) && row.amountUsdt > 0);
 
   return {
     rows: mapped,
@@ -160,8 +154,9 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Keep indexer fresh without a UI change — catch up when lag/stale.
-    maybeCatchUpSync("recent-transactions");
+    // Fast path: index the missing head before reading, so a new confirmed
+    // transfer is in this response. Large historical gaps only refresh the tip.
+    await ensureFreshIncrementalSync("recent-transactions");
 
     const sync = await buildSyncStatusPayload();
     const liveStatus = deriveLiveStatus({
@@ -195,7 +190,7 @@ export async function GET(request: Request) {
       ...reserveResult.rows,
     ];
 
-    const selected = selectLatestCombinedTransactions(combined, RECENT_TX_LIMIT);
+    const selected = selectRecentTxFeed(combined, RECENT_TX_LIMIT);
 
     if (DEBUG_RECENT_TX) {
       console.info("[api/recent-transactions] diagnostics", {
@@ -236,7 +231,11 @@ export async function GET(request: Request) {
       configError: configError || sync.configError || null,
     };
 
-    return withRateLimitHeaders(jsonOk(payload), limited.result);
+    const response = withRateLimitHeaders(jsonOk(payload), limited.result);
+    for (const [key, value] of Object.entries(recentTxCacheHeaders())) {
+      response.headers.set(key, value);
+    }
+    return response;
   } catch (err) {
     console.error("[api/recent-transactions]", err);
     return jsonError("Unable to load live data", 503);
