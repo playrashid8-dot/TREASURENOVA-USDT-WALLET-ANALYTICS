@@ -34,8 +34,9 @@ function authorize(request: Request): boolean {
 
 /**
  * Scheduled incremental sync (Vercel Cron sends GET with Bearer CRON_SECRET).
- * Indexes the chain tip, then a bounded contiguous chunk. Does not run a
- * full historical scan inside one invocation.
+ * Hobby plans only allow a once-daily cron, so the dashboard poll is the
+ * near-real-time path. This job indexes the chain tip, then a bounded
+ * contiguous chunk. It does not run a full historical scan in one invocation.
  */
 export async function GET(request: Request) {
   const limited = enforceRateLimit(request, "sync", 12, 60_000);
