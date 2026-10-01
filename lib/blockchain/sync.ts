@@ -465,8 +465,14 @@ export async function runSync(options?: {
       endBlock,
       tokenDecimals: token.decimals,
       tokenSymbol: token.symbol,
-      // Near-real-time and bounded incremental scans use canonical BSC RPC.
-      forceRpc: mode !== "full" || targetedBackfill,
+      // The chain tip must use BSC RPC. A far-behind backfill may use SQD
+      // first, because the configured RPC (publicnode) rejects historical
+      // eth_getLogs with 403. A 204/empty indexer page still does not advance
+      // the checkpoint; the scanner falls back to RPC.
+      forceRpc:
+        mode === "tip" ||
+        targetedBackfill ||
+        latestBlock - endBlock < 500,
       onProgress: ({ fromBlock, toBlock, logsFound: chunkLogs, chunkSize }) => {
         logsFound += chunkLogs;
         if (chunkLogs > 0 || toBlock % (chunkSize * 25) < chunkSize) {

@@ -134,7 +134,8 @@ function isArchiveGatedError(err: unknown): boolean {
     msg.includes("archive requests require") ||
     msg.includes("personal token") ||
     msg.includes("unauthorized") ||
-    (msg.includes("403") && msg.includes("archive"))
+    (msg.includes("403") && msg.includes("archive")) ||
+    (msg.includes("403") && msg.includes("forbidden"))
   );
 }
 
@@ -989,7 +990,7 @@ async function scanViaRpc(options: {
       }
 
       errors.push(`RPC blocks ${cursor}–${endBlock}: ${msg}`);
-      console.warn(`[logs] RPC scan stopped at block ${cursor}: ${msg.slice(0, 200)}`);
+      console.warn(`[logs] RPC scan stopped at block ${cursor}: ${msg.slice(0, 500)}`);
 
       // Never skip the failed block. Retry transient errors, then stop so
       // the checkpoint stays on the last successfully scanned block.
